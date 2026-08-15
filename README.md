@@ -6,7 +6,7 @@ Listing is automatic and unreviewed. A plugin here tagged itself; it was not vet
 
 ## Get your plugin listed
 
-1. Put your plugin in a public GitHub repository, with `plugin.json` at the root (or in a subfolder, up to two levels deep, if you keep several plugins in one repository). See [Create a plugin](https://accountant24.ai/docs/create-a-plugin) for the format, and [accountant24/accountant24-skills](https://github.com/accountant24/accountant24-skills) for a complete example.
+1. Put your plugin in a public GitHub repository, with `plugin.json` at the root (or in a subfolder, up to two levels deep, if you keep several plugins in one repository). See [Create a plugin](https://accountant24.ai/docs/create-a-plugin) for the format, and [accountant24/skills](https://github.com/accountant24/skills) for a complete example.
 2. Add the topic `accountant24-plugin` to the repository (the gear next to About on the repository page).
 3. Wait for the next index run. The index refreshes every 30 minutes and rescans a repository whenever its default branch moves.
 
@@ -20,7 +20,7 @@ GITHUB_TOKEN=$(gh auth token) node scripts/index.mjs --repo owner/name
 
 For each plugin: the manifest fields (`name`, `description`, `version`, `author`, `license`, `homepage`, `keywords`, `minAppVersion`), where it lives (`repo`, `subpath`, `defaultBranch`, and the exact `commit` that was indexed), repository signals (`stars`, `pushedAt`), its skills (name and description from each `SKILL.md`), and `official`, which is `true` only for repositories owned by the `accountant24` organization. Entries are sorted by `id` (`owner/repo`, plus the subfolder for plugins in subfolders). `updatedAt` is when the list last changed.
 
-The index is served at `https://raw.githubusercontent.com/accountant24/accountant24-marketplace/main/marketplace.json`.
+The index is served at `https://raw.githubusercontent.com/accountant24/marketplace/main/marketplace.json`.
 
 ## Moderation
 

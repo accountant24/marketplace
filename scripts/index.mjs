@@ -50,7 +50,7 @@ const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function headers(extra = {}) {
-  const h = { "User-Agent": "accountant24-marketplace", ...extra };
+  const h = { "User-Agent": "accountant24-marketplace-indexer", ...extra };
   if (token) h.Authorization = `Bearer ${token}`;
   return h;
 }
