@@ -38,8 +38,6 @@ const RAW = "https://raw.githubusercontent.com";
 const INDEX_FILE = "marketplace.json";
 const BLOCKLIST_FILE = "blocklist.json";
 
-const args = process.argv.slice(2);
-const onlyRepo = args.includes("--repo") ? args[args.indexOf("--repo") + 1] : undefined;
 const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
 
 // --- GitHub access -----------------------------------------------------------
@@ -70,7 +68,7 @@ async function rawFile(repo, sha, path) {
   return res.text();
 }
 
-async function searchTopic() {
+export async function searchTopic() {
   const seen = new Map();
   const q = encodeURIComponent(`topic:${TOPIC} archived:false`);
   for (let page = 1; page <= SEARCH_PAGE_LIMIT; page++) {
@@ -97,7 +95,7 @@ function isPlainObject(value) {
 
 const str = (value) => (typeof value === "string" ? value : undefined);
 
-function pluginNameError(name) {
+export function pluginNameError(name) {
   if (name.length === 0) return "name is empty";
   if (name.length > 64) return "name exceeds 64 characters";
   if (!/^[a-z0-9-]+$/.test(name)) return "name may only contain lowercase letters, numbers, and hyphens";
@@ -109,7 +107,7 @@ function pluginNameError(name) {
 /** Pull the published fields out of a plugin.json. Only a usable name is
  *  required; every other field is taken when it has the right type and dropped
  *  when it does not. Returns { ok: true, manifest } or { ok: false, error }. */
-function parseManifest(text) {
+export function parseManifest(text) {
   let raw;
   try {
     raw = JSON.parse(text);
@@ -145,7 +143,7 @@ function parseManifest(text) {
 /** The subset of YAML that skill frontmatter uses: top-level `key: value`,
  *  plain or quoted, plus `>`/`|` block scalars and indented continuation
  *  lines. Undefined when there is no frontmatter block. */
-function parseFrontmatter(text) {
+export function parseFrontmatter(text) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
   if (!match) return undefined;
   const lines = match[1].split(/\r?\n/);
@@ -178,9 +176,18 @@ function parseFrontmatter(text) {
 
 // --- Indexing ----------------------------------------------------------------
 
+/** Why a repository can never be listed, whatever else is true of it, or
+ *  undefined when nothing rules it out. Private is not here on purpose: an
+ *  author may well preview a repository before making it public. */
+export function excluded(item) {
+  if (item.fork) return "a fork";
+  if (item.archived) return "archived";
+  return undefined;
+}
+
 /** Index one repository at one commit. Returns the plugin entry, or undefined
  *  after logging why the repository was skipped. */
-async function indexRepo(item, sha) {
+export async function indexRepo(item, sha) {
   const repo = item.full_name;
   const skip = (reason) => {
     console.log(`skipped ${repo}: ${reason}`);
@@ -260,26 +267,17 @@ function stable(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-async function main() {
-  // Nothing on disk is consulted in --repo mode: the script may have been piped
-  // in from raw.githubusercontent.com, where reading blocklist.json would mean
-  // reading whatever happens to sit in the author's working directory.
-  const blocklist = onlyRepo
-    ? new Set()
-    : new Set(readJson(BLOCKLIST_FILE, []).map((b) => b.repo.toLowerCase()));
-
-  let items;
-  if (onlyRepo) {
-    const item = await api(`/repos/${onlyRepo}`);
-    if (!item) throw new Error(`repository not found: ${onlyRepo}`);
-    items = [item];
-  } else {
-    items = (await searchTopic()).filter((item) => !item.private && !item.fork && !item.archived);
-  }
-
+/** Every plugin that should be listed, from a set of repositories, sorted by id.
+ *  Touches no files, so it is the same decision in --repo mode as in a full run. */
+export async function collect(items, blocklist = new Set()) {
   const plugins = [];
   for (const item of items) {
     const repo = item.full_name;
+    const why = excluded(item);
+    if (why) {
+      console.log(`skipped ${repo}: ${why}`);
+      continue;
+    }
     if (blocklist.has(repo.toLowerCase())) {
       console.log(`skipped ${repo}: on the blocklist`);
       continue;
@@ -293,17 +291,38 @@ async function main() {
     const plugin = await indexRepo(item, sha);
     if (plugin) plugins.push(plugin);
   }
-  plugins.sort((a, b) => a.id.localeCompare(b.id));
+  return plugins.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export async function main(argv = process.argv.slice(2)) {
+  const flag = argv.indexOf("--repo");
+  const onlyRepo = flag === -1 ? undefined : argv[flag + 1];
+  if (flag !== -1 && !onlyRepo) throw new Error("--repo needs a repository, like --repo owner/name");
 
   if (onlyRepo) {
+    const item = await api(`/repos/${onlyRepo}`);
+    if (!item) throw new Error(`repository not found: ${onlyRepo}`);
+    // Nothing on disk is consulted here: the script may have been piped in from
+    // raw.githubusercontent.com, where reading blocklist.json would mean reading
+    // whatever happens to sit in the author's working directory.
+    const plugins = await collect([item]);
     console.log(stable(plugins[0] ?? null));
     return;
   }
+
+  const blocklist = new Set(readJson(BLOCKLIST_FILE, []).map((b) => b.repo.toLowerCase()));
+  const items = (await searchTopic()).filter((item) => !item.private);
+  const plugins = await collect(items, blocklist);
   console.log(`${items.length} repositories with the topic, ${plugins.length} plugins listed`);
   writeFileSync(INDEX_FILE, stable({ schemaVersion: 1, topic: TOPIC, plugins }));
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+// Run only when this file is the program: as a file, or piped in as `node -`,
+// which is how an author previews a repository straight from a URL. Importing
+// it -- as the tests do -- must not kick off a run.
+if (process.argv[1] === "-" || import.meta.filename === process.argv[1]) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}

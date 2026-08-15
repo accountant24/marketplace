@@ -1,0 +1,28 @@
+# Runs the indexer's tests. Deliberately separate from the index workflow: a
+# failing test should never stop the index refreshing, and the bot's half-hourly
+# commit only touches marketplace.json, so it does not need to run these.
+
+name: Test
+
+on:
+  push:
+    paths:
+      - "scripts/**"
+      - ".github/workflows/test.yml"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - run: node --test scripts/index.test.mjs
