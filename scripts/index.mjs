@@ -9,13 +9,15 @@
 // is retried. The workflow runs every 30 minutes and commits only when the file
 // changed, so a run that fails costs nothing and the next one starts over.
 //
-// Zero dependencies, Node 22. Runs in GitHub Actions with the workflow's
-// GITHUB_TOKEN. Locally: GITHUB_TOKEN=$(gh auth token) node scripts/index.mjs
+// Zero dependencies, Node 22.7 or newer. Runs in GitHub Actions with the
+// workflow's GITHUB_TOKEN. Locally: GITHUB_TOKEN=$(gh auth token) node scripts/index.mjs
 //
 // Flags:
 //   --repo owner/name   index just this repository, print the result, and write
-//                       nothing (skips the topic search; for authors checking
-//                       their own repository before adding the topic)
+//                       nothing. Skips the topic search and the blocklist, so it
+//                       needs no checkout around it: an author can pipe this
+//                       file straight from raw.githubusercontent.com into node
+//                       to see what the index would make of their repository.
 //
 // The desktop app validates every manifest again at install time, so this
 // script checks only what it needs to render a listing: a plugin.json with a
@@ -259,7 +261,12 @@ function stable(value) {
 }
 
 async function main() {
-  const blocklist = new Set(readJson(BLOCKLIST_FILE, []).map((b) => b.repo.toLowerCase()));
+  // Nothing on disk is consulted in --repo mode: the script may have been piped
+  // in from raw.githubusercontent.com, where reading blocklist.json would mean
+  // reading whatever happens to sit in the author's working directory.
+  const blocklist = onlyRepo
+    ? new Set()
+    : new Set(readJson(BLOCKLIST_FILE, []).map((b) => b.repo.toLowerCase()));
 
   let items;
   if (onlyRepo) {
