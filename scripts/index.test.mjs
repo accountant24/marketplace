@@ -14,10 +14,10 @@ console.log = () => {};
 
 // --- a fake GitHub -----------------------------------------------------------
 
-const response = ({ status = 200, json, text }) => ({
+const response = ({ status = 200, json, text, headers = {} }) => ({
   status,
   ok: status < 400,
-  headers: { get: () => null },
+  headers: { get: (name) => headers[name] ?? null },
   json: async () => json,
   text: async () => text,
 });
@@ -389,7 +389,50 @@ test("--repo prints the entry and writes nothing", async () => {
   assert.equal(entry.skills.length, 2);
 });
 
-test("--repo on a repository that does not exist is an error", async () => {
+// --- messages someone can act on ---------------------------------------------
+//
+// Every one of these is read by a plugin author who cannot see the code, so it
+// has to name the problem and, where there is one, the way out of it.
+
+test("a repository nobody can see suggests both reasons it might not be there", async () => {
   stubGitHub([]);
-  await assert.rejects(() => main(["--repo", "nobody/nothing"]), /not found/);
+  await assert.rejects(() => main(["--repo", "nobody/nothing"]), /spelling/, "a typo");
+  await assert.rejects(() => main(["--repo", "nobody/nothing"]), /private/, "or it is private");
+  await assert.rejects(() => main(["--repo", "nobody/nothing"]), /GITHUB_TOKEN/, "and what to do about that");
+});
+
+test("a rejected token says how to get a working one", async () => {
+  // Not `gh auth token`, which would hand back the same rejected token.
+  globalThis.fetch = async () => response({ status: 401 });
+  await assert.rejects(() => main(["--repo", "someone/plugin"]), /gh auth login/);
+});
+
+test("running out of rate limit says so, rather than blaming the repository", async () => {
+  globalThis.fetch = async () => response({ status: 403, headers: { "x-ratelimit-remaining": "0" } });
+  await assert.rejects(() => main(["--repo", "someone/plugin"]), /rate limit/);
+});
+
+test("a refusal that is not a rate limit points at the token instead", async () => {
+  globalThis.fetch = async () => response({ status: 403, headers: { "x-ratelimit-remaining": "57" } });
+  await assert.rejects(() => main(["--repo", "someone/plugin"]), /private/);
+});
+
+test("GitHub being down is not reported as the author's mistake", async () => {
+  globalThis.fetch = async () => response({ status: 502 });
+  await assert.rejects(() => main(["--repo", "someone/plugin"]), /GitHub is having trouble/);
+});
+
+test("being a fork or archived comes with the way out of it", () => {
+  assert.match(excluded({ fork: true }), /repository of its own/);
+  assert.match(excluded({ archived: true }), /Unarchive/);
+});
+
+test("a manifest with no name is shown what one looks like", () => {
+  assert.match(parseManifest('{"description":"no name here"}').error, /"name": "my-plugin"/);
+});
+
+test("a manifest name that breaks a rule is told which rule", () => {
+  assert.match(parseManifest('{"name":"My-Plugin"}').error, /lowercase/);
+  assert.match(parseManifest('{"name":"my--plugin"}').error, /two hyphens/);
+  assert.match(parseManifest('{"name":"-my-plugin"}').error, /hyphen/);
 });

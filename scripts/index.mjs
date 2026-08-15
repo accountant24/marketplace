@@ -33,6 +33,8 @@ const OFFICIAL_OWNERS = new Set(["accountant24"]);
 const MAX_SKILLS_PER_PLUGIN = 50;
 const SEARCH_PAGE_LIMIT = 10; // the search API stops at 1000 results anyway
 
+const DOCS = "See https://accountant24.ai/docs/create-a-plugin for the format.";
+
 const API = "https://api.github.com";
 const RAW = "https://raw.githubusercontent.com";
 const INDEX_FILE = "marketplace.json";
@@ -48,6 +50,20 @@ function headers(extra = {}) {
   return h;
 }
 
+const WITH_TOKEN = "run it again with GITHUB_TOKEN=$(gh auth token) in front";
+
+/** What the reader can actually do about a request GitHub turned down. */
+function advice(res) {
+  if (res.status === 401) return "That GitHub token was rejected. Sign in again with `gh auth login`, then retry.";
+  if (res.status === 403 || res.status === 429) {
+    return res.headers.get("x-ratelimit-remaining") === "0"
+      ? `You have used up GitHub's rate limit. Wait a few minutes, or ${WITH_TOKEN} for a much higher one.`
+      : `GitHub would not allow that. If the repository is private, ${WITH_TOKEN}.`;
+  }
+  if (res.status >= 500) return "GitHub is having trouble of its own. Try again in a few minutes.";
+  return "";
+}
+
 /** GET a REST API path. Undefined on 404; anything else that is not OK throws,
  *  so a half-finished run can never overwrite a good index. */
 async function api(path) {
@@ -55,7 +71,12 @@ async function api(path) {
     headers: headers({ Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" }),
   });
   if (res.status === 404) return undefined;
-  if (!res.ok) throw new Error(`GitHub API ${res.status} for ${path}`);
+  if (!res.ok) {
+    // The API path means nothing to a plugin author, so it only leads when
+    // there is no plainer thing to say about the status.
+    const help = advice(res);
+    throw new Error(help ? `${help} (GitHub returned ${res.status}.)` : `GitHub returned ${res.status} for ${path}.`);
+  }
   return res.json();
 }
 
@@ -64,7 +85,9 @@ async function api(path) {
 async function rawFile(repo, sha, path) {
   const res = await fetch(`${RAW}/${repo}/${sha}/${path}`, { headers: headers() });
   if (res.status === 404) return undefined;
-  if (!res.ok) throw new Error(`raw ${res.status} for ${repo}@${sha}:${path}`);
+  if (!res.ok) {
+    throw new Error(`Could not read ${path} from ${repo}: GitHub returned ${res.status}. ${advice(res)}`.trimEnd());
+  }
   return res.text();
 }
 
@@ -96,11 +119,11 @@ function isPlainObject(value) {
 const str = (value) => (typeof value === "string" ? value : undefined);
 
 export function pluginNameError(name) {
-  if (name.length === 0) return "name is empty";
-  if (name.length > 64) return "name exceeds 64 characters";
-  if (!/^[a-z0-9-]+$/.test(name)) return "name may only contain lowercase letters, numbers, and hyphens";
-  if (name.startsWith("-") || name.endsWith("-")) return "name may not start or end with a hyphen";
-  if (name.includes("--")) return "name may not contain consecutive hyphens";
+  if (name.length === 0) return "name is empty.";
+  if (name.length > 64) return "name is longer than 64 characters.";
+  if (!/^[a-z0-9-]+$/.test(name)) return "name may only hold lowercase letters, numbers and hyphens.";
+  if (name.startsWith("-") || name.endsWith("-")) return "name may not start or end with a hyphen.";
+  if (name.includes("--")) return "name may not hold two hyphens in a row.";
   return undefined;
 }
 
@@ -112,14 +135,16 @@ export function parseManifest(text) {
   try {
     raw = JSON.parse(text);
   } catch {
-    return { ok: false, error: "plugin.json is not valid JSON" };
+    return { ok: false, error: "its plugin.json is not valid JSON. A trailing comma or a missing quote is the usual cause." };
   }
-  if (!isPlainObject(raw)) return { ok: false, error: "plugin.json must contain a JSON object" };
+  if (!isPlainObject(raw)) {
+    return { ok: false, error: 'its plugin.json must hold a JSON object, like { "name": "my-plugin" }.' };
+  }
 
   const name = str(raw.name);
-  if (name === undefined) return { ok: false, error: "plugin.json: name is required" };
+  if (name === undefined) return { ok: false, error: 'its plugin.json has no name. Add one, like "name": "my-plugin".' };
   const nameError = pluginNameError(name);
-  if (nameError) return { ok: false, error: `plugin.json: ${nameError}` };
+  if (nameError) return { ok: false, error: `its plugin.json ${nameError}` };
 
   const manifest = { name };
   for (const key of ["version", "description", "homepage", "license"]) manifest[key] = str(raw[key]);
@@ -180,8 +205,8 @@ export function parseFrontmatter(text) {
  *  undefined when nothing rules it out. Private is not here on purpose: an
  *  author may well preview a repository before making it public. */
 export function excluded(item) {
-  if (item.fork) return "a fork";
-  if (item.archived) return "archived";
+  if (item.fork) return "it is a fork, and forks are never listed. Publish the plugin from a repository of its own.";
+  if (item.archived) return "it is archived, and archived repositories are never listed. Unarchive it to be indexed.";
   return undefined;
 }
 
@@ -190,12 +215,12 @@ export function excluded(item) {
 export async function indexRepo(item, sha) {
   const repo = item.full_name;
   const skip = (reason) => {
-    console.log(`skipped ${repo}: ${reason}`);
+    console.log(`${repo} is not listed: ${reason}`);
     return undefined;
   };
 
   const text = await rawFile(repo, sha, "plugin.json");
-  if (text === undefined) return skip("no plugin.json at the repository root");
+  if (text === undefined) return skip(`there is no plugin.json at the root. ${DOCS}`);
   const parsed = parseManifest(text);
   if (!parsed.ok) return skip(parsed.error);
   const manifest = parsed.manifest;
@@ -208,36 +233,36 @@ export async function indexRepo(item, sha) {
         .sort()
     : [];
   if (folders.length > MAX_SKILLS_PER_PLUGIN) {
-    console.log(`${repo}: ${folders.length} skill folders, indexing the first ${MAX_SKILLS_PER_PLUGIN}`);
+    console.log(`${repo} has ${folders.length} skill folders; only the first ${MAX_SKILLS_PER_PLUGIN}, in alphabetical order, are listed.`);
   }
 
   const skills = [];
   for (const folder of folders.slice(0, MAX_SKILLS_PER_PLUGIN)) {
     const path = `skills/${folder}/SKILL.md`;
-    const drop = (reason) => console.log(`${repo}: ${path} skipped, ${reason}`);
+    const drop = (reason) => console.log(`${repo}: the skill in skills/${folder} is not listed. ${reason}`);
     if (!SKILL_NAME_RE.test(folder)) {
-      drop("skill folder names are lowercase letters, numbers, and hyphens (max 64)");
+      drop("Folder names may only hold lowercase letters, numbers and hyphens, up to 64 of them. Rename it.");
       continue;
     }
     const skillText = await rawFile(repo, sha, path);
     const fm = skillText === undefined ? undefined : parseFrontmatter(skillText);
     if (!fm) {
-      drop("no SKILL.md with a frontmatter block");
+      drop(`There is no ${path}, or it does not open with a --- frontmatter block. ${DOCS}`);
       continue;
     }
     if (fm.name !== folder) {
-      drop(`frontmatter name "${fm.name ?? ""}" does not match the folder name`);
+      drop(`Its frontmatter says name: ${fm.name ?? "(nothing)"}, but the folder is called ${folder}. Make the two match.`);
       continue;
     }
     if (!fm.description) {
-      drop("frontmatter has no description");
+      drop("Its frontmatter has no description. Add one: it is what the app shows, and how the agent knows when to use the skill.");
       continue;
     }
     skills.push({ name: folder, description: fm.description });
   }
   // A plugin with no skills still lists: it may hold a kind of content this
   // script does not index yet, and the app decides what is worth showing.
-  if (skills.length === 0) console.log(`${repo}: listed with no skills`);
+  if (skills.length === 0) console.log(`${repo} is listed, but with no skills under skills/.`);
 
   return {
     // `id` is the key consumers store. It equals `repo` today, and stays the
@@ -275,17 +300,18 @@ export async function collect(items, blocklist = new Set()) {
     const repo = item.full_name;
     const why = excluded(item);
     if (why) {
-      console.log(`skipped ${repo}: ${why}`);
+      console.log(`${repo} is not listed: ${why}`);
       continue;
     }
     if (blocklist.has(repo.toLowerCase())) {
-      console.log(`skipped ${repo}: on the blocklist`);
+      console.log(`${repo} is not listed: it is on the blocklist. See blocklist.json for the reason.`);
       continue;
     }
     const ref = await api(`/repos/${repo}/git/ref/heads/${item.default_branch}`);
     const sha = ref?.object?.sha;
     if (!sha) {
-      console.log(`skipped ${repo}: could not resolve the default branch`);
+      const branch = item.default_branch;
+      console.log(`${repo} is not listed: its ${branch} branch has no commits to read. Push one first.`);
       continue;
     }
     const plugin = await indexRepo(item, sha);
@@ -297,11 +323,15 @@ export async function collect(items, blocklist = new Set()) {
 export async function main(argv = process.argv.slice(2)) {
   const flag = argv.indexOf("--repo");
   const onlyRepo = flag === -1 ? undefined : argv[flag + 1];
-  if (flag !== -1 && !onlyRepo) throw new Error("--repo needs a repository, like --repo owner/name");
+  if (flag !== -1 && !onlyRepo) throw new Error("--repo needs a repository to look at, like: --repo owner/name");
 
   if (onlyRepo) {
     const item = await api(`/repos/${onlyRepo}`);
-    if (!item) throw new Error(`repository not found: ${onlyRepo}`);
+    if (!item) {
+      throw new Error(
+        `There is no repository at github.com/${onlyRepo}. Check the owner/name spelling; if it is private, ${WITH_TOKEN}.`,
+      );
+    }
     // Nothing on disk is consulted here: the script may have been piped in from
     // raw.githubusercontent.com, where reading blocklist.json would mean reading
     // whatever happens to sit in the author's working directory.
