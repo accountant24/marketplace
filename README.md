@@ -10,7 +10,11 @@ Listing is automatic and unreviewed. A plugin here tagged itself; it was not vet
 2. Add the topic `accountant24-plugin` to the repository (the gear next to About on the repository page).
 3. Wait for the next index run. The index refreshes every 30 minutes.
 
-Forks, archived repositories, and repositories without a valid `plugin.json` are not listed. To see what the index makes of your repository — the entry it would publish, or the reason it skipped something — run the indexer against it yourself, before or after you add the topic. Nothing to clone or install; Node 22.7 or newer is all it needs:
+Forks, archived repositories, and repositories without a valid `plugin.json` are not listed.
+
+## Check your plugin
+
+Run the indexer against a repository to see the entry it would publish, or the reason it skipped something. Worth doing before you add the topic, and the first thing to try if your plugin has not shown up. Nothing to clone or install; Node 22.7 or newer is all it needs:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/accountant24/marketplace/main/scripts/index.mjs \
