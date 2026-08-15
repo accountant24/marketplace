@@ -4,18 +4,16 @@
   "plugins": [
     {
       "id": "accountant24/skills",
-      "name": "accountant24",
-      "description": "The skills that come with the app: recurring spending, a subscription audit, and turning a routine you describe into a plugin of your own.",
-      "version": "1.0.0",
+      "name": "accountant24-skills",
+      "description": "A collection of built-in skills that comes with the Accountant24 app.",
       "author": {
         "name": "Accountant24",
         "url": "https://accountant24.ai"
       },
       "license": "Apache-2.0",
-      "homepage": "https://accountant24.ai/docs/plugins",
       "repo": "accountant24/skills",
       "defaultBranch": "main",
-      "commit": "4f663509118a2d43f9e827ed148902e20b79e99e",
+      "commit": "07d97e1d9c57386880347e5d044233494d0d48b3",
       "skills": [
         {
           "name": "create-plugin",
