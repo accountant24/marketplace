@@ -2,52 +2,45 @@
 // Builds the Accountant24 plugin index (marketplace.json) from GitHub.
 //
 // A plugin is listed when a public, non-fork, non-archived repository carries
-// the topic `accountant24-plugin` and its default branch holds a valid
-// plugin.json (at the root, or up to two folders deep) with at least one valid
-// skill under skills/. What was skipped, and why, goes to rejected.json so an
-// author can see why their repository is not (fully) listed. blocklist.json is
+// the topic `accountant24-plugin` and its default branch holds a plugin.json at
+// the root with at least one valid skill under skills/. blocklist.json is
 // hand-maintained and always wins.
 //
-// Zero dependencies, Node 22. Runs in GitHub Actions every 30 minutes with the
-// workflow's GITHUB_TOKEN. Locally: GITHUB_TOKEN=$(gh auth token) node scripts/index.mjs
+// The index is rebuilt from scratch on every run: nothing is cached and nothing
+// is retried. The workflow runs every 30 minutes and commits only when the file
+// changed, so a run that fails costs nothing and the next one starts over.
+//
+// Zero dependencies, Node 22. Runs in GitHub Actions with the workflow's
+// GITHUB_TOKEN. Locally: GITHUB_TOKEN=$(gh auth token) node scripts/index.mjs
 //
 // Flags:
-//   --dry-run            compute and print, write nothing
-//   --repo owner/name    index just this repository and print the result (skips
-//                        the topic search and the private filter; for authors
-//                        checking their own repository). Implies --dry-run.
+//   --repo owner/name   index just this repository, print the result, and write
+//                       nothing (skips the topic search; for authors checking
+//                       their own repository before adding the topic)
 //
-// Validation rules mirror the desktop app's install-time checks
-// (packages/desktop/src/main/agent/plugin-manifest.ts and plugins-store.ts in
-// machulav/accountant24). The app re-validates on install, so a stale rule here
-// can only over- or under-list, never install something the app rejects.
+// The desktop app validates every manifest again at install time, so this
+// script checks only what it needs to render a listing: a usable plugin name,
+// and at least one skill with a name and a description. Unknown manifest fields
+// are ignored on purpose -- rejecting them would delist a plugin the moment it
+// adopted a field this script had not heard of yet.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const TOPIC = "accountant24-plugin";
 const OFFICIAL_OWNERS = new Set(["accountant24"]);
-const MAX_MANIFEST_DEPTH = 2;
-const MAX_PLUGINS_PER_REPO = 20;
 const MAX_SKILLS_PER_PLUGIN = 50;
 const SEARCH_PAGE_LIMIT = 10; // the search API stops at 1000 results anyway
 
 const API = "https://api.github.com";
 const RAW = "https://raw.githubusercontent.com";
 const INDEX_FILE = "marketplace.json";
-const REJECTED_FILE = "rejected.json";
 const BLOCKLIST_FILE = "blocklist.json";
-const README_FILE = "README.md";
-const README_START = "<!-- plugins:start -->";
-const README_END = "<!-- plugins:end -->";
 
 const args = process.argv.slice(2);
 const onlyRepo = args.includes("--repo") ? args[args.indexOf("--repo") + 1] : undefined;
-const dryRun = args.includes("--dry-run") || onlyRepo !== undefined;
 const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
 
 // --- GitHub access -----------------------------------------------------------
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function headers(extra = {}) {
   const h = { "User-Agent": "accountant24-marketplace-indexer", ...extra };
@@ -55,30 +48,15 @@ function headers(extra = {}) {
   return h;
 }
 
-/** GET a REST API path. Undefined on 404; waits out a rate limit once; any
- *  other failure throws so a broken run never commits a partial index. */
+/** GET a REST API path. Undefined on 404; anything else that is not OK throws,
+ *  so a half-finished run can never overwrite a good index. */
 async function api(path) {
-  const url = `${API}${path}`;
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch(url, {
-      headers: headers({ Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" }),
-    });
-    if (res.status === 404) return undefined;
-    if ((res.status === 403 || res.status === 429) && attempt === 0) {
-      const retryAfter = Number(res.headers.get("retry-after"));
-      const reset = Number(res.headers.get("x-ratelimit-reset"));
-      const remaining = res.headers.get("x-ratelimit-remaining");
-      const wait =
-        retryAfter > 0 ? retryAfter : remaining === "0" && reset > 0 ? reset - Math.floor(Date.now() / 1000) : 0;
-      if (wait > 0 && wait <= 180) {
-        console.warn(`rate limited on ${path}; waiting ${wait}s`);
-        await sleep(wait * 1000 + 500);
-        continue;
-      }
-    }
-    if (!res.ok) throw new Error(`GitHub API ${res.status} for ${path}`);
-    return res.json();
-  }
+  const res = await fetch(`${API}${path}`, {
+    headers: headers({ Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" }),
+  });
+  if (res.status === 404) return undefined;
+  if (!res.ok) throw new Error(`GitHub API ${res.status} for ${path}`);
+  return res.json();
 }
 
 /** Fetch a file at an exact commit over raw.githubusercontent.com (not counted
@@ -105,27 +83,17 @@ async function searchTopic() {
   return [...seen.values()];
 }
 
-// --- Validation (mirrors the app) --------------------------------------------
+// --- Validation --------------------------------------------------------------
 
-const KNOWN_KEYS = new Set([
-  "$schema",
-  "name",
-  "version",
-  "description",
-  "author",
-  "homepage",
-  "repository",
-  "license",
-  "keywords",
-  "extensions",
-]);
 const NAMESPACE = "ai.accountant24";
-const VERSION_RE = /^(\d+)\.(\d+)\.(\d+)/;
+const VERSION_RE = /^\d+\.\d+\.\d+/;
 const SKILL_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/;
 
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+const str = (value) => (typeof value === "string" ? value : undefined);
 
 function pluginNameError(name) {
   if (name.length === 0) return "name is empty";
@@ -136,7 +104,9 @@ function pluginNameError(name) {
   return undefined;
 }
 
-/** Parse and validate a plugin.json. Returns { ok: true, manifest } or { ok: false, error }. */
+/** Pull the published fields out of a plugin.json. Only a usable name is
+ *  required; every other field is taken when it has the right type and dropped
+ *  when it does not. Returns { ok: true, manifest } or { ok: false, error }. */
 function parseManifest(text) {
   let raw;
   try {
@@ -145,45 +115,28 @@ function parseManifest(text) {
     return { ok: false, error: "plugin.json is not valid JSON" };
   }
   if (!isPlainObject(raw)) return { ok: false, error: "plugin.json must contain a JSON object" };
-  const unknown = Object.keys(raw).filter((key) => !KNOWN_KEYS.has(key));
-  if (unknown.length > 0) return { ok: false, error: `plugin.json: unknown field ${unknown.sort().join(", ")}` };
-  if (typeof raw.name !== "string") return { ok: false, error: "plugin.json: name is required" };
-  const nameError = pluginNameError(raw.name);
+
+  const name = str(raw.name);
+  if (name === undefined) return { ok: false, error: "plugin.json: name is required" };
+  const nameError = pluginNameError(name);
   if (nameError) return { ok: false, error: `plugin.json: ${nameError}` };
-  const manifest = { name: raw.name };
-  for (const key of ["version", "description", "homepage", "repository", "license"]) {
-    if (raw[key] === undefined) continue;
-    if (typeof raw[key] !== "string") return { ok: false, error: `plugin.json: ${key} must be a string` };
-    manifest[key] = raw[key];
-  }
-  if (raw.author !== undefined) {
-    if (!isPlainObject(raw.author)) return { ok: false, error: "plugin.json: author must be an object" };
-    manifest.author = {};
+
+  const manifest = { name };
+  for (const key of ["version", "description", "homepage", "license"]) manifest[key] = str(raw[key]);
+  if (isPlainObject(raw.author)) {
+    const author = {};
     for (const key of ["name", "email", "url"]) {
-      if (raw.author[key] === undefined) continue;
-      if (typeof raw.author[key] !== "string") return { ok: false, error: `plugin.json: author.${key} must be a string` };
-      manifest.author[key] = raw.author[key];
+      const value = str(raw.author[key]);
+      if (value !== undefined) author[key] = value;
     }
+    if (Object.keys(author).length > 0) manifest.author = author;
   }
-  if (raw.keywords !== undefined) {
-    if (!Array.isArray(raw.keywords) || raw.keywords.some((k) => typeof k !== "string")) {
-      return { ok: false, error: "plugin.json: keywords must be an array of strings" };
-    }
-    manifest.keywords = raw.keywords;
+  if (Array.isArray(raw.keywords)) {
+    const keywords = raw.keywords.filter((k) => typeof k === "string");
+    if (keywords.length > 0) manifest.keywords = keywords;
   }
-  if (raw.extensions !== undefined) {
-    if (!isPlainObject(raw.extensions)) return { ok: false, error: "plugin.json: extensions must be an object" };
-    const ours = raw.extensions[NAMESPACE];
-    if (ours !== undefined) {
-      if (!isPlainObject(ours)) return { ok: false, error: `plugin.json: extensions["${NAMESPACE}"] must be an object` };
-      if (ours.minAppVersion !== undefined) {
-        if (typeof ours.minAppVersion !== "string" || !VERSION_RE.test(ours.minAppVersion.trim())) {
-          return { ok: false, error: "plugin.json: minAppVersion must be a version like 1.2.3" };
-        }
-        manifest.minAppVersion = ours.minAppVersion.trim();
-      }
-    }
-  }
+  const minAppVersion = str(raw.extensions?.[NAMESPACE]?.minAppVersion)?.trim();
+  if (minAppVersion !== undefined && VERSION_RE.test(minAppVersion)) manifest.minAppVersion = minAppVersion;
   return { ok: true, manifest };
 }
 
@@ -223,117 +176,75 @@ function parseFrontmatter(text) {
 
 // --- Indexing ----------------------------------------------------------------
 
-function depthOf(path) {
-  return path.split("/").length - 1;
-}
-
-function isHiddenPath(path) {
-  return path.split("/").some((part) => part.startsWith(".") || part === "node_modules");
-}
-
-/** Index one repository at one commit. Returns { plugins, rejected }. */
+/** Index one repository at one commit. Returns the plugin entry, or undefined
+ *  after logging why the repository was skipped. */
 async function indexRepo(item, sha) {
   const repo = item.full_name;
-  const plugins = [];
-  const rejected = [];
-  const reject = (path, reason) => rejected.push({ repo, path, commit: sha, reason });
+  const skip = (reason) => {
+    console.log(`skipped ${repo}: ${reason}`);
+    return undefined;
+  };
 
-  const tree = await api(`/repos/${repo}/git/trees/${sha}?recursive=1`);
-  if (!tree) {
-    reject("", "could not read the repository tree");
-    return { plugins, rejected };
-  }
-  if (tree.truncated) console.warn(`warning: tree of ${repo} is truncated; some files may be missed`);
-  const blobs = new Set(tree.tree.filter((e) => e.type === "blob").map((e) => e.path));
+  const text = await rawFile(repo, sha, "plugin.json");
+  if (text === undefined) return skip("no plugin.json at the repository root");
+  const parsed = parseManifest(text);
+  if (!parsed.ok) return skip(parsed.error);
+  const manifest = parsed.manifest;
 
-  const manifestPaths = [...blobs]
-    .filter((p) => (p === "plugin.json" || p.endsWith("/plugin.json")) && !isHiddenPath(p))
-    .filter((p) => depthOf(p) <= MAX_MANIFEST_DEPTH)
+  const contents = await api(`/repos/${repo}/contents/skills?ref=${sha}`);
+  if (!Array.isArray(contents)) return skip("no skills/ folder");
+  const folders = contents
+    .filter((entry) => entry.type === "dir")
+    .map((entry) => entry.name)
     .sort();
-  if (manifestPaths.length === 0) {
-    reject("", "no plugin.json found (root, or up to two folders deep)");
-    return { plugins, rejected };
-  }
-  if (manifestPaths.length > MAX_PLUGINS_PER_REPO) {
-    console.warn(`warning: ${repo} has ${manifestPaths.length} manifests; indexing the first ${MAX_PLUGINS_PER_REPO}`);
+  if (folders.length > MAX_SKILLS_PER_PLUGIN) {
+    console.log(`${repo}: ${folders.length} skill folders, indexing the first ${MAX_SKILLS_PER_PLUGIN}`);
   }
 
-  for (const manifestPath of manifestPaths.slice(0, MAX_PLUGINS_PER_REPO)) {
-    const dir = manifestPath === "plugin.json" ? "" : manifestPath.slice(0, -"plugin.json".length);
-    const subpath = dir.replace(/\/$/, "");
-    const text = await rawFile(repo, sha, manifestPath);
-    if (text === undefined) {
-      reject(manifestPath, "plugin.json could not be fetched");
+  const skills = [];
+  for (const folder of folders.slice(0, MAX_SKILLS_PER_PLUGIN)) {
+    const path = `skills/${folder}/SKILL.md`;
+    const drop = (reason) => console.log(`${repo}: ${path} skipped, ${reason}`);
+    if (!SKILL_NAME_RE.test(folder)) {
+      drop("skill folder names are lowercase letters, numbers, and hyphens (max 64)");
       continue;
     }
-    const parsed = parseManifest(text);
-    if (!parsed.ok) {
-      reject(manifestPath, parsed.error);
+    const skillText = await rawFile(repo, sha, path);
+    const fm = skillText === undefined ? undefined : parseFrontmatter(skillText);
+    if (!fm) {
+      drop("no SKILL.md with a frontmatter block");
       continue;
     }
-    const manifest = parsed.manifest;
-
-    const skillFiles = [...blobs]
-      .filter((p) => p.startsWith(`${dir}skills/`) && p.endsWith("/SKILL.md"))
-      .filter((p) => p.slice(dir.length).split("/").length === 3)
-      .sort();
-    if (skillFiles.length > MAX_SKILLS_PER_PLUGIN) {
-      console.warn(`warning: ${repo}/${subpath} has ${skillFiles.length} skills; indexing the first ${MAX_SKILLS_PER_PLUGIN}`);
-    }
-    const skills = [];
-    for (const skillFile of skillFiles.slice(0, MAX_SKILLS_PER_PLUGIN)) {
-      const folder = skillFile.slice(dir.length).split("/")[1];
-      if (!SKILL_NAME_RE.test(folder)) {
-        reject(skillFile, "skill folder names are lowercase letters, numbers, and hyphens (max 64)");
-        continue;
-      }
-      const skillText = await rawFile(repo, sha, skillFile);
-      const fm = skillText === undefined ? undefined : parseFrontmatter(skillText);
-      if (!fm) {
-        reject(skillFile, "SKILL.md has no frontmatter block");
-        continue;
-      }
-      if (fm.name !== folder) {
-        reject(skillFile, `frontmatter name "${fm.name ?? ""}" does not match the folder name`);
-        continue;
-      }
-      if (!fm.description) {
-        reject(skillFile, "SKILL.md frontmatter has no description");
-        continue;
-      }
-      skills.push({ name: folder, description: fm.description });
-    }
-    if (skills.length === 0) {
-      reject(manifestPath, "no valid skill under skills/");
+    if (fm.name !== folder) {
+      drop(`frontmatter name "${fm.name ?? ""}" does not match the folder name`);
       continue;
     }
-
-    plugins.push({
-      id: subpath ? `${repo}/${subpath}` : repo,
-      name: manifest.name,
-      description: manifest.description ?? "",
-      version: manifest.version,
-      author: manifest.author,
-      license: manifest.license ?? item.license?.spdx_id ?? undefined,
-      homepage: manifest.homepage,
-      keywords: manifest.keywords,
-      repo,
-      subpath,
-      defaultBranch: item.default_branch,
-      commit: sha,
-      stars: item.stargazers_count,
-      pushedAt: item.pushed_at,
-      minAppVersion: manifest.minAppVersion,
-      skills,
-      official: OFFICIAL_OWNERS.has(item.owner.login.toLowerCase()),
-    });
+    if (!fm.description) {
+      drop("frontmatter has no description");
+      continue;
+    }
+    skills.push({ name: folder, description: fm.description });
   }
-  return { plugins, rejected };
-}
+  if (skills.length === 0) return skip("no valid skill under skills/");
 
-/** Bring a reused entry's volatile repository fields up to date. */
-function refresh(entry, item) {
-  return { ...entry, stars: item.stargazers_count, pushedAt: item.pushed_at };
+  return {
+    // `id` is the key consumers store. It equals `repo` today, and stays the
+    // key if a repository is ever allowed to hold more than one plugin.
+    id: repo,
+    name: manifest.name,
+    description: manifest.description ?? "",
+    version: manifest.version,
+    author: manifest.author,
+    license: manifest.license ?? item.license?.spdx_id ?? undefined,
+    homepage: manifest.homepage,
+    keywords: manifest.keywords,
+    repo,
+    defaultBranch: item.default_branch,
+    commit: sha,
+    minAppVersion: manifest.minAppVersion,
+    skills,
+    official: OFFICIAL_OWNERS.has(item.owner.login.toLowerCase()),
+  };
 }
 
 function readJson(file, fallback) {
@@ -344,20 +255,7 @@ function stable(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-function renderReadmeTable(plugins) {
-  if (plugins.length === 0) return "_No plugins indexed yet._";
-  const rows = plugins.map((p) => {
-    const link = `https://github.com/${p.repo}${p.subpath ? `/tree/${p.defaultBranch}/${p.subpath}` : ""}`;
-    const skills = p.skills.map((s) => `\`${p.name}:${s.name}\``).join(", ");
-    const badge = p.official ? " (official)" : "";
-    return `| [${p.name}](${link})${badge} | ${p.description.replace(/\|/g, "\\|")} | ${p.stars} | ${skills} |`;
-  });
-  return ["| Plugin | Description | Stars | Skills |", "| --- | --- | ---: | --- |", ...rows].join("\n");
-}
-
 async function main() {
-  const previous = readJson(INDEX_FILE, { plugins: [] });
-  const previousRejected = readJson(REJECTED_FILE, []);
   const blocklist = new Set(readJson(BLOCKLIST_FILE, []).map((b) => b.repo.toLowerCase()));
 
   let items;
@@ -369,78 +267,30 @@ async function main() {
     items = (await searchTopic()).filter((item) => !item.private && !item.fork && !item.archived);
   }
 
-  const prevByRepo = new Map();
-  for (const entry of previous.plugins) {
-    if (!prevByRepo.has(entry.repo)) prevByRepo.set(entry.repo, []);
-    prevByRepo.get(entry.repo).push(entry);
-  }
-  const prevRejectedByRepo = new Map();
-  for (const entry of previousRejected) {
-    if (!prevRejectedByRepo.has(entry.repo)) prevRejectedByRepo.set(entry.repo, []);
-    prevRejectedByRepo.get(entry.repo).push(entry);
-  }
-
   const plugins = [];
-  const rejected = [];
-  let reused = 0;
   for (const item of items) {
     const repo = item.full_name;
-    if (blocklist.has(repo.toLowerCase())) continue;
+    if (blocklist.has(repo.toLowerCase())) {
+      console.log(`skipped ${repo}: on the blocklist`);
+      continue;
+    }
     const ref = await api(`/repos/${repo}/git/ref/heads/${item.default_branch}`);
     const sha = ref?.object?.sha;
     if (!sha) {
-      rejected.push({ repo, path: "", commit: "", reason: "could not resolve the default branch" });
+      console.log(`skipped ${repo}: could not resolve the default branch`);
       continue;
     }
-    const prevEntries = prevByRepo.get(repo) ?? [];
-    const prevRejects = prevRejectedByRepo.get(repo) ?? [];
-    const known = [...prevEntries, ...prevRejects];
-    if (!onlyRepo && known.length > 0 && known.every((e) => e.commit === sha)) {
-      plugins.push(...prevEntries.map((e) => refresh(e, item)));
-      rejected.push(...prevRejects);
-      reused++;
-      continue;
-    }
-    const result = await indexRepo(item, sha);
-    plugins.push(...result.plugins);
-    rejected.push(...result.rejected);
+    const plugin = await indexRepo(item, sha);
+    if (plugin) plugins.push(plugin);
   }
-
   plugins.sort((a, b) => a.id.localeCompare(b.id));
-  rejected.sort((a, b) => a.repo.localeCompare(b.repo) || a.path.localeCompare(b.path));
 
   if (onlyRepo) {
-    console.log(stable({ plugins, rejected }));
+    console.log(stable(plugins[0] ?? null));
     return;
   }
-
-  const unchanged = JSON.stringify(plugins) === JSON.stringify(previous.plugins);
-  const index = {
-    schemaVersion: 1,
-    topic: TOPIC,
-    updatedAt: unchanged && previous.updatedAt ? previous.updatedAt : new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-    plugins,
-  };
-
-  console.log(
-    `${items.length} repositories with the topic, ${plugins.length} plugins listed, ${rejected.length} rejections, ${reused} repositories unchanged`,
-  );
-  if (dryRun) {
-    console.log(stable(index));
-    return;
-  }
-
-  writeFileSync(INDEX_FILE, stable(index));
-  writeFileSync(REJECTED_FILE, stable(rejected));
-  if (existsSync(README_FILE)) {
-    const readme = readFileSync(README_FILE, "utf8");
-    const start = readme.indexOf(README_START);
-    const end = readme.indexOf(README_END);
-    if (start !== -1 && end > start) {
-      const next = `${readme.slice(0, start + README_START.length)}\n${renderReadmeTable(plugins)}\n${readme.slice(end)}`;
-      if (next !== readme) writeFileSync(README_FILE, next);
-    }
-  }
+  console.log(`${items.length} repositories with the topic, ${plugins.length} plugins listed`);
+  writeFileSync(INDEX_FILE, stable({ schemaVersion: 1, topic: TOPIC, plugins }));
 }
 
 main().catch((error) => {
