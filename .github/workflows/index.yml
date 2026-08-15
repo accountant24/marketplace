@@ -3,7 +3,7 @@
 # zero-dependency Node script, and the workflow's own GITHUB_TOKEN is enough
 # for the search API and the push.
 
-name: Index plugins
+name: Refresh the index
 
 on:
   schedule:
