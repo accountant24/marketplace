@@ -10,7 +10,7 @@ Listing is automatic and unreviewed. A plugin here tagged itself; it was not vet
 2. Add the topic `accountant24-plugin` to the repository (the gear next to About on the repository page).
 3. Wait for the next index run. The index refreshes every 30 minutes.
 
-Forks, archived repositories, and repositories without a `plugin.json` and at least one valid `skills/<name>/SKILL.md` are not listed. To see what the index makes of your repository — the entry it would publish, or the reason it skipped something — run it yourself, before or after you add the topic:
+Forks, archived repositories, and repositories without a valid `plugin.json` are not listed. To see what the index makes of your repository — the entry it would publish, or the reason it skipped something — run it yourself, before or after you add the topic:
 
 ```sh
 GITHUB_TOKEN=$(gh auth token) node scripts/index.mjs --repo owner/name
@@ -30,7 +30,7 @@ The index is served at `https://raw.githubusercontent.com/accountant24/marketpla
 
 [`scripts/index.mjs`](scripts/index.mjs) is a zero-dependency Node 22 script that rebuilds the index from scratch on every run — nothing cached, nothing retried. [`.github/workflows/index.yml`](.github/workflows/index.yml) runs it every 30 minutes with the workflow's own `GITHUB_TOKEN` and commits `marketplace.json` when it changed; a run that fails costs nothing, because the next one starts over.
 
-The script checks only what it needs to list a plugin: a usable name, and at least one skill with a name and a description. Unknown manifest fields are ignored rather than rejected, so a plugin that adopts a new field does not fall out of the index. The desktop app validates the manifest again at install time.
+The script checks only what it needs to list a plugin: a `plugin.json` with a usable name. It records the skills a plugin holds but does not require any, and it ignores manifest fields it does not recognize — a plugin built out of something newer than the indexer should not quietly fall out of the index. The desktop app validates the manifest again at install time.
 
 ## License
 

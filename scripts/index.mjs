@@ -2,9 +2,8 @@
 // Builds the Accountant24 plugin index (marketplace.json) from GitHub.
 //
 // A plugin is listed when a public, non-fork, non-archived repository carries
-// the topic `accountant24-plugin` and its default branch holds a plugin.json at
-// the root with at least one valid skill under skills/. blocklist.json is
-// hand-maintained and always wins.
+// the topic `accountant24-plugin` and its default branch holds a valid
+// plugin.json at the root. blocklist.json is hand-maintained and always wins.
 //
 // The index is rebuilt from scratch on every run: nothing is cached and nothing
 // is retried. The workflow runs every 30 minutes and commits only when the file
@@ -19,10 +18,11 @@
 //                       their own repository before adding the topic)
 //
 // The desktop app validates every manifest again at install time, so this
-// script checks only what it needs to render a listing: a usable plugin name,
-// and at least one skill with a name and a description. Unknown manifest fields
-// are ignored on purpose -- rejecting them would delist a plugin the moment it
-// adopted a field this script had not heard of yet.
+// script checks only what it needs to render a listing: a plugin.json with a
+// usable name. It records the skills a plugin holds but does not require any,
+// and it ignores manifest fields it does not recognize. Both rules are there so
+// that a plugin built out of something newer than this script -- a kind of
+// content it has never heard of -- does not quietly fall out of the index.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
@@ -192,11 +192,12 @@ async function indexRepo(item, sha) {
   const manifest = parsed.manifest;
 
   const contents = await api(`/repos/${repo}/contents/skills?ref=${sha}`);
-  if (!Array.isArray(contents)) return skip("no skills/ folder");
-  const folders = contents
-    .filter((entry) => entry.type === "dir")
-    .map((entry) => entry.name)
-    .sort();
+  const folders = Array.isArray(contents)
+    ? contents
+        .filter((entry) => entry.type === "dir")
+        .map((entry) => entry.name)
+        .sort()
+    : [];
   if (folders.length > MAX_SKILLS_PER_PLUGIN) {
     console.log(`${repo}: ${folders.length} skill folders, indexing the first ${MAX_SKILLS_PER_PLUGIN}`);
   }
@@ -225,7 +226,9 @@ async function indexRepo(item, sha) {
     }
     skills.push({ name: folder, description: fm.description });
   }
-  if (skills.length === 0) return skip("no valid skill under skills/");
+  // A plugin with no skills still lists: it may hold a kind of content this
+  // script does not index yet, and the app decides what is worth showing.
+  if (skills.length === 0) console.log(`${repo}: listed with no skills`);
 
   return {
     // `id` is the key consumers store. It equals `repo` today, and stays the
