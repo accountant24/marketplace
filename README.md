@@ -1,4 +1,4 @@
-# Accountant24 plugin marketplace
+# Accountant24 Plugin Marketplace
 
 The index of plugins for [Accountant24](https://accountant24.ai).
 
@@ -13,7 +13,7 @@ Every public repository tagged with the topic `accountant24-plugin` that holds a
 2. Add the topic `accountant24-plugin` to the repository.
 3. Wait for the next index run. The index refreshes every 30 minutes.
 
-Forks, archived repositories, and repositories without a valid `plugin.json` are not listed.
+Forks and archived repositories are never listed.
 
 ## Check your plugin
 
@@ -23,7 +23,7 @@ To see the entry the index would publish for a repository, or the reason it skip
 curl -fsSL https://raw.githubusercontent.com/accountant24/marketplace/main/scripts/index.mjs | node - --repo owner/name
 ```
 
-Needs Node 22.7 or newer, and writes nothing. Add `GITHUB_TOKEN=$(gh auth token)` in front if you hit GitHub's rate limit, or if your repository is still private.
+Needs Node 22.7 or newer. Writes nothing. Add `GITHUB_TOKEN=$(gh auth token)` in front if you hit GitHub's rate limit, or if your repository is still private.
 
 ## Moderation
 
@@ -37,4 +37,4 @@ To report a plugin, open an issue or a pull request against that file.
 
 ## License
 
-Apache-2.0
+[Apache-2.0](LICENSE)
