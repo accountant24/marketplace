@@ -1,5 +1,36 @@
 {
   "schemaVersion": 1,
   "topic": "accountant24-plugin",
-  "plugins": []
+  "plugins": [
+    {
+      "id": "accountant24/skills",
+      "name": "accountant24",
+      "description": "The skills that come with the app: recurring spending, a subscription audit, and turning a routine you describe into a plugin of your own.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Accountant24",
+        "url": "https://accountant24.ai"
+      },
+      "license": "Apache-2.0",
+      "homepage": "https://accountant24.ai/docs/plugins",
+      "repo": "accountant24/skills",
+      "defaultBranch": "main",
+      "commit": "4f663509118a2d43f9e827ed148902e20b79e99e",
+      "skills": [
+        {
+          "name": "create-plugin",
+          "description": "Turns a routine the user describes into a reusable plugin they can run again later. Use when the user asks to create a skill or a plugin, to save or remember a report or review they just asked for, or to turn something they do regularly into a repeatable command. Ask things like \"make this a skill\", \"save this as a plugin\", \"create a monthly review I can rerun\", or \"turn this into something I can use every month\"."
+        },
+        {
+          "name": "recurring-spending",
+          "description": "Gives you an overview of everything you pay regularly, including rent, utilities, insurance, loans, phone and internet, plus subscriptions and memberships. Groups them into bills and subscriptions, totals them per month and per year, shows what is due in the next 30 days, and flags price increases and expected payments that stopped arriving. Ask things like \"what am I paying monthly\", \"what are my fixed costs\", or \"what recurring payments do I have\". For a cancel-focused review of just subscriptions, use the subscription-audit skill."
+        },
+        {
+          "name": "subscription-audit",
+          "description": "Reviews your subscriptions and memberships, like streaming, apps, SaaS, gym, and news services. Shows what each costs per month and per year, when it renews, and flags price increases, duplicate services, forgotten charges, and subscriptions you likely cancelled. Ask things like \"list my subscriptions\", \"what can I cancel\", \"when does Netflix renew\", or \"did Spotify get more expensive\". For rent, utilities, and the full recurring picture, use the recurring-spending skill."
+        }
+      ],
+      "official": true
+    }
+  ]
 }
