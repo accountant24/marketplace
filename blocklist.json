@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "repo": "example/not-a-real-repository",
+    "reason": "An example entry, kept to show the format. This repository does not exist."
+  }
+]

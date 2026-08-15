@@ -6,6 +6,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { collect, excluded, indexRepo, main, parseFrontmatter, parseManifest, pluginNameError, searchTopic } from "./index.mjs";
 
@@ -347,6 +348,17 @@ test("entries come out sorted by id", async () => {
 test("a blocklisted repository is never indexed, whatever its case", async () => {
   const items = stubGitHub([plainRepo({ full_name: "Someone/Plugin" })]);
   assert.deepEqual(await collect(items, new Set(["someone/plugin"])), []);
+});
+
+test("the blocklist in this repository is readable, and every entry is usable", () => {
+  // The one file here a human edits by hand, so it is the one a typo reaches.
+  // A broken one throws on every scheduled run and the index stops updating.
+  const blocklist = JSON.parse(readFileSync(new URL("../blocklist.json", import.meta.url), "utf8"));
+  assert.ok(Array.isArray(blocklist), "blocklist.json holds an array");
+  for (const entry of blocklist) {
+    assert.match(entry.repo ?? "", /^[^/\s]+\/[^/\s]+$/, `${entry.repo} should read owner/name`);
+    assert.ok(entry.reason, `${entry.repo} should say why it is blocked`);
+  }
 });
 
 test("a fork or an archived repository is skipped even when asked for directly", async () => {

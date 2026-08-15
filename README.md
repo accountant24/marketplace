@@ -27,13 +27,7 @@ Needs Node 22.7 or newer. Writes nothing. Add `GITHUB_TOKEN=$(gh auth token)` in
 
 ## Moderation
 
-[`blocklist.json`](blocklist.json) lists repositories that are never indexed:
-
-```json
-[{ "repo": "owner/name", "reason": "why it is blocked" }]
-```
-
-To report a plugin, open an issue or a pull request against that file.
+[`blocklist.json`](blocklist.json) lists repositories that are never indexed. To report a plugin, open an issue or a pull request against that file.
 
 ## License
 
