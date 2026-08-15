@@ -1,6 +1,6 @@
 # Accountant24 plugin marketplace
 
-The index of plugins for [Accountant24](https://accountant24.ai), the local-first AI agent for personal finance. It is built automatically from GitHub: every public repository tagged with the topic `accountant24-plugin` that holds a valid plugin is listed here, in [`marketplace.json`](marketplace.json). No submission form, no review queue.
+The index of plugins for [Accountant24](https://accountant24.ai), the local-first AI agent for personal finance. It is built automatically from GitHub: every public repository tagged with the topic `accountant24-plugin` that holds a valid plugin is listed here, in [`marketplace.json`](marketplace.json).
 
 Listing is automatic and unreviewed. A plugin here tagged itself; it was not vetted by Accountant24. Plugins can read and change your financial data and can run software on your computer, so check the source repository before you install one.
 
@@ -17,27 +17,32 @@ Forks, archived repositories, and repositories without a valid `plugin.json` are
 Run the indexer against a repository to see the entry it would publish, or the reason it skipped something. Worth doing before you add the topic, and the first thing to try if your plugin has not shown up. Nothing to clone or install; Node 22.7 or newer is all it needs:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/accountant24/marketplace/main/scripts/index.mjs \
-  | node - --repo owner/name
+curl -fsSL https://raw.githubusercontent.com/accountant24/marketplace/main/scripts/index.mjs | node - --repo owner/name
 ```
 
-It prints the entry and writes nothing, on your machine or ours. Three API calls is well inside GitHub's unauthenticated rate limit; prefix the command with `GITHUB_TOKEN=$(gh auth token)` if you hit it anyway, or if your repository is still private.
+It writes nothing. Add `GITHUB_TOKEN=$(gh auth token)` in front if you hit GitHub's rate limit, or if your repository is still private.
 
 ## What the index records
 
-For each plugin: the manifest fields (`name`, `description`, `version`, `author`, `license`, `homepage`, `keywords`, `minAppVersion`), where it lives (`repo`, `defaultBranch`, and the exact `commit` that was indexed), its skills (name and description from each `SKILL.md`), and `official`, which is `true` only for repositories owned by the `accountant24` organization. Entries are sorted by `id`, the key to store a plugin under. The file changes only when a plugin does, so its git history is the changelog.
+Everything in your `plugin.json`, the repository and the exact commit that was indexed, the name and description of each skill, and `official`, which is `true` only for repositories owned by the `accountant24` organization. Each entry is keyed by `id`, the value to store a plugin under.
 
 The index is served at `https://raw.githubusercontent.com/accountant24/marketplace/main/marketplace.json`.
 
 ## Moderation
 
-[`blocklist.json`](blocklist.json) lists repositories that are never indexed, with a reason. To report a plugin, open an issue or a pull request against that file.
+[`blocklist.json`](blocklist.json) lists repositories that are never indexed. Each entry names the repository and why it is blocked:
+
+```json
+[{ "repo": "owner/name", "reason": "why it is blocked" }]
+```
+
+Only `repo` is read by the indexer; `reason` is there for whoever reads the file next. To report a plugin, open an issue or a pull request against that file.
 
 ## How it runs
 
-[`scripts/index.mjs`](scripts/index.mjs) is a zero-dependency Node script that rebuilds the index from scratch on every run — nothing cached, nothing retried. [`.github/workflows/index.yml`](.github/workflows/index.yml) runs it every 30 minutes with the workflow's own `GITHUB_TOKEN` and commits `marketplace.json` when it changed; a run that fails costs nothing, because the next one starts over.
+[`scripts/index.mjs`](scripts/index.mjs) is a zero-dependency Node script that rebuilds the index from scratch on every run, so a run that fails costs nothing — the next one starts over. [`.github/workflows/index.yml`](.github/workflows/index.yml) runs it every 30 minutes with the workflow's own `GITHUB_TOKEN` and commits `marketplace.json` when it changed.
 
-The script checks only what it needs to list a plugin: a `plugin.json` with a usable name. It records the skills a plugin holds but does not require any, and it ignores manifest fields it does not recognize — a plugin built out of something newer than the indexer should not quietly fall out of the index. The desktop app validates the manifest again at install time.
+It checks only what it needs to list a plugin, and ignores what it does not recognize rather than rejecting it. The desktop app validates the manifest again at install time.
 
 ## License
 
