@@ -6,14 +6,10 @@
       "id": "accountant24/skills",
       "name": "accountant24-skills",
       "description": "A collection of built-in skills that comes with the Accountant24 app.",
-      "author": {
-        "name": "Accountant24",
-        "url": "https://accountant24.ai"
-      },
       "license": "Apache-2.0",
       "repo": "accountant24/skills",
       "defaultBranch": "main",
-      "commit": "07d97e1d9c57386880347e5d044233494d0d48b3",
+      "commit": "25013fe28b392be578684f83f891c336cb9f5449",
       "skills": [
         {
           "name": "create-plugin",
