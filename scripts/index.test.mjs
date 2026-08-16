@@ -104,7 +104,9 @@ function stubGitHub(repos) {
 }
 
 const skillFile = (name, description) => `---\nname: ${name}\ndescription: ${description}\n---\n\nHow to do the thing.\n`;
-const manifest = (fields) => JSON.stringify({ name: "a-plugin", ...fields });
+
+const SCHEMA_URL = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
+const manifest = (fields) => JSON.stringify({ $schema: SCHEMA_URL, name: "a-plugin", ...fields });
 
 /** The one repository most tests start from: valid, two skills, nothing odd. */
 const plainRepo = (overrides = {}) => ({
@@ -130,14 +132,29 @@ test("a plugin name is lowercase letters, numbers and hyphens", () => {
 
 // --- the manifest ------------------------------------------------------------
 
-test("a name is the only thing a manifest must have", () => {
-  const { ok, manifest: parsed } = parseManifest('{"name":"a-plugin"}');
+test("a schema and a name are the only things a manifest must have", () => {
+  const { ok, manifest: parsed } = parseManifest(JSON.stringify({ $schema: SCHEMA_URL, name: "a-plugin" }));
   assert.equal(ok, true);
   assert.equal(parsed.name, "a-plugin");
 });
 
+test("a manifest that does not say what format it is written in is not a plugin", () => {
+  for (const $schema of [undefined, "", "1.0.0", "https://example.com/plugin.schema.json", 42]) {
+    const text = JSON.stringify({ ...($schema === undefined ? {} : { $schema }), name: "a-plugin" });
+    assert.equal(parseManifest(text).ok, false, `${text} should be rejected`);
+  }
+});
+
+test("any version of the manifest format is accepted, not just the one this script was written against", () => {
+  // Pinning 1.0.0 would empty the index the day the format moves on, which is
+  // a bad way to find out that it did.
+  const text = JSON.stringify({ $schema: "https://agent-plugins.org/schemas/2.1.0/plugin.schema.json", name: "a-plugin" });
+  assert.equal(parseManifest(text).ok, true);
+});
+
 test("a manifest with no usable name is not a plugin", () => {
-  for (const text of ['{"description":"no name"}', '{"name":42}', '{"name":"Bad Name"}']) {
+  for (const fields of [{ description: "no name" }, { name: 42 }, { name: "Bad Name" }]) {
+    const text = JSON.stringify({ $schema: SCHEMA_URL, ...fields });
     assert.equal(parseManifest(text).ok, false, `${text} should be rejected`);
   }
 });
@@ -148,14 +165,29 @@ test("something that is not a JSON object is not a manifest", () => {
   }
 });
 
-test("a field the indexer has never heard of does not cost a plugin its listing", () => {
-  // The whole point: the app may ship a new manifest field before this script
-  // learns about it, and a plugin using it must stay in the index.
-  const { ok, manifest: parsed } = parseManifest(
-    '{"name":"a-plugin","$schema":"https://example.com/s.json","repository":"https://github.com/a/b","pages":["home"]}',
-  );
+test("a key the manifest format does not define is not a plugin", () => {
+  // The format closes the object, so an unknown key is a mistake rather than
+  // something newer -- most often a typo, or app-specific data written where
+  // the format does not allow it.
+  const { ok, error } = parseManifest(manifest({ pages: ["home"], nmae: "typo" }));
+  assert.equal(ok, false);
+  assert.match(error, /nmae, pages/, "names every one of them, in a stable order");
+  assert.match(error, /extensions/, "and points at where app-specific data goes");
+});
+
+test("a field the format defines but the index does not publish is still allowed", () => {
+  // `repository` is a manifest field; the index just has no use for it, since
+  // what the repository is, is GitHub's to say.
+  const { ok, manifest: parsed } = parseManifest(manifest({ repository: "https://github.com/a/b" }));
   assert.equal(ok, true);
-  assert.equal(parsed.name, "a-plugin");
+  assert.equal(parsed.repository, undefined, "allowed in, not passed through");
+});
+
+test("app-specific data under extensions does not cost a plugin its listing", () => {
+  // The one door the format leaves open, and the reason closing the rest is
+  // safe: an app can ship something new without waiting on this script.
+  const { ok } = parseManifest(manifest({ extensions: { "com.example": { somethingNew: true } } }));
+  assert.equal(ok, true);
 });
 
 test("the published fields are taken from the manifest", () => {
@@ -568,11 +600,17 @@ test("being a fork or archived comes with the way out of it", () => {
 });
 
 test("a manifest with no name is shown what one looks like", () => {
-  assert.match(parseManifest('{"description":"no name here"}').error, /"name": "my-plugin"/);
+  assert.match(parseManifest(JSON.stringify({ $schema: SCHEMA_URL, description: "no name here" })).error, /"name": "my-plugin"/);
 });
 
 test("a manifest name that breaks a rule is told which rule", () => {
-  assert.match(parseManifest('{"name":"My-Plugin"}').error, /lowercase/);
-  assert.match(parseManifest('{"name":"my--plugin"}').error, /two hyphens/);
-  assert.match(parseManifest('{"name":"-my-plugin"}').error, /hyphen/);
+  const named = (name) => parseManifest(JSON.stringify({ $schema: SCHEMA_URL, name })).error;
+  assert.match(named("My-Plugin"), /lowercase/);
+  assert.match(named("my--plugin"), /two hyphens/);
+  assert.match(named("-my-plugin"), /hyphen/);
+});
+
+test("a missing schema is shown the exact line to paste", () => {
+  const { error } = parseManifest('{"name":"a-plugin"}');
+  assert.match(error, /"\$schema": "https:\/\/agent-plugins\.org\/schemas\/1\.0\.0\/plugin\.schema\.json"/);
 });

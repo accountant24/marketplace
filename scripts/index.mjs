@@ -20,11 +20,16 @@
 //                       to see what the index would make of their repository.
 //
 // The desktop app validates every manifest again at install time, so this
-// script checks only what it needs to render a listing: a plugin.json with a
-// usable name. It records the skills a plugin holds but does not require any,
-// and it ignores manifest fields it does not recognize. Both rules are there so
-// that a plugin built out of something newer than this script -- a kind of
-// content it has never heard of -- does not quietly fall out of the index.
+// script checks only what it needs to render a listing: a plugin.json that
+// declares the Agent Plugins manifest schema, carries a usable name, and holds
+// nothing the manifest format does not define. The format closes the object, so
+// anything client-specific belongs under `extensions`, which is the field the
+// spec provides for it.
+//
+// Content works the other way round. The script records the skills a plugin
+// holds but does not require any, so that a plugin built out of something newer
+// than this script -- a kind of content it has never heard of -- does not
+// quietly fall out of the index.
 //
 // Every entry keeps its two sources of truth apart. `manifest` is what the
 // author declared in plugin.json; `repo` is what GitHub says about the
@@ -142,6 +147,30 @@ const NAMESPACE = "ai.accountant24";
 const VERSION_RE = /^\d+\.\d+\.\d+/;
 const SKILL_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/;
 
+// The manifest format, as an author would write it into "$schema".
+const SCHEMA_URL = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
+// Any version of it is accepted, not the 1.0.0 above alone. Pinning one would
+// delist every plugin in the index the day the format gains a version, which is
+// too much to hang on a string an author has to remember to update.
+const SCHEMA_URL_RE = /^https:\/\/agent-plugins\.org\/schemas\/[^/]+\/plugin\.schema\.json$/;
+
+// Every top-level key the manifest format defines. It closes the object, so a
+// key that is not here is not a manifest field, whatever it looks like.
+// `repository` is listed because the format defines it, though the index does
+// not publish it: what the repository is, is `repo`'s to say, not the author's.
+const MANIFEST_KEYS = new Set([
+  "$schema",
+  "name",
+  "version",
+  "description",
+  "author",
+  "homepage",
+  "repository",
+  "license",
+  "keywords",
+  "extensions",
+]);
+
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -190,10 +219,31 @@ export function parseManifest(text) {
     return { ok: false, error: 'its plugin.json must hold a JSON object, like { "name": "my-plugin" }.' };
   }
 
+  const schema = str(raw.$schema);
+  if (schema === undefined || !SCHEMA_URL_RE.test(schema)) {
+    return {
+      ok: false,
+      error: `its plugin.json does not say which manifest format it is written in. Add "$schema": "${SCHEMA_URL}" as the first key. ${DOCS}`,
+    };
+  }
+
   const name = str(raw.name);
   if (name === undefined) return { ok: false, error: 'its plugin.json has no name. Add one, like "name": "my-plugin".' };
   const nameError = pluginNameError(name);
   if (nameError) return { ok: false, error: `its plugin.json ${nameError}` };
+
+  const unknown = Object.keys(raw)
+    .filter((key) => !MANIFEST_KEYS.has(key))
+    .sort();
+  if (unknown.length > 0) {
+    const keys = unknown.join(", ");
+    return {
+      ok: false,
+      error:
+        `its plugin.json holds ${unknown.length === 1 ? "a key" : "keys"} the manifest format does not define: ${keys}. ` +
+        `Remove ${unknown.length === 1 ? "it" : "them"}, or move anything meant for a particular app under "extensions". ${DOCS}`,
+    };
+  }
 
   // Built in the order the published entry reads, since that is the order the
   // file -- and so every diff of it -- comes out in.
