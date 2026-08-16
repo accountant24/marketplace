@@ -400,12 +400,21 @@ test("a skill description too long to publish is clipped, and the skill still li
   assert.equal(skill.description.length, 1024);
 });
 
-test("official is true only for the accountant24 organization", async () => {
-  const [ours] = stubGitHub([plainRepo({ full_name: "accountant24/skills" })]);
+// The real accountant24 account. Immutable, so a test that has to be updated
+// to keep passing is a test catching something.
+const ACCOUNTANT24 = 268739799;
+
+test("official is the accountant24 account, not the name it happens to go by", async () => {
+  const [ours] = stubGitHub([plainRepo({ full_name: "accountant24/skills", ownerId: ACCOUNTANT24 })]);
   assert.equal((await indexRepo(ours, "c0ffee")).official, true);
 
   const [theirs] = stubGitHub([plainRepo({ full_name: "accountant24-fan/skills" })]);
   assert.equal((await indexRepo(theirs, "c0ffee")).official, false);
+
+  // Free the login and someone else can take it. The badge must not come with
+  // it: this is the whole reason the check is on the id and not the name.
+  const [claimed] = stubGitHub([plainRepo({ full_name: "accountant24/skills", ownerId: 999 })]);
+  assert.equal((await indexRepo(claimed, "c0ffee")).official, false, "same login, different account");
 });
 
 test("a claimed license and a detected one are both published, neither replacing the other", async () => {

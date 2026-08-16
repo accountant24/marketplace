@@ -37,7 +37,14 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const SCHEMA_VERSION = 1;
 const TOPIC = "accountant24-plugin";
-const OFFICIAL_OWNERS = new Set(["accountant24"]);
+// Numeric account ids, not logins. `official` is the strongest claim the index
+// makes, and a login is only borrowed: rename or delete the accountant24
+// organization and whoever claims the freed name would inherit the badge on
+// everything they publish. An account id is the account itself, so it cannot be
+// handed to someone else.
+const OFFICIAL_OWNERS = new Set([
+  268739799, // accountant24
+]);
 const MAX_SKILLS_PER_PLUGIN = 50;
 const SEARCH_PAGE_LIMIT = 10; // the search API stops at 1000 results anyway
 
@@ -320,7 +327,7 @@ export async function indexRepo(item, sha) {
     // `id` is the key consumers store. It equals owner/name today, and stays
     // the key if a repository is ever allowed to hold more than one plugin.
     id: repo,
-    official: OFFICIAL_OWNERS.has(owner.login.toLowerCase()),
+    official: OFFICIAL_OWNERS.has(owner.id),
     manifest,
     repo: {
       owner: {
