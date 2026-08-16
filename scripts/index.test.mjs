@@ -267,6 +267,71 @@ test("keywords are capped in number and in length", () => {
   assert.ok(!parsed.keywords.some((k) => k.length > 64), "the overlong one never made it in");
 });
 
+// --- saying what was dropped -------------------------------------------------
+//
+// A field that does not meet the format is dropped rather than taking the
+// plugin down with it. Dropping it quietly, though, leaves the author to work
+// that out from a listing that is missing something they wrote.
+
+const notesOf = (fields) => parseManifest(manifest(fields)).notes.join("\n");
+
+test("a field dropped for its type says which field, and what it should have been", () => {
+  const notes = notesOf({ version: 42, license: null });
+  assert.match(notes, /version was dropped: it must be a string/);
+  assert.match(notes, /license was dropped: it must be a string/);
+});
+
+test("a field dropped for its length says which limit it went past", () => {
+  assert.match(notesOf({ license: "M".repeat(65) }), /license was dropped: it is longer than 64 characters/);
+  assert.match(notesOf({ homepage: `https://example.com/${"p".repeat(500)}` }), /homepage was dropped: it is longer than 512/);
+});
+
+test("a clipped description says it was clipped", () => {
+  assert.match(notesOf({ description: "a".repeat(2000) }), /description was clipped to 1024 characters/);
+});
+
+test("author names the part that went, not just the whole", () => {
+  const notes = notesOf({ author: { name: "Ada", email: 42 } });
+  assert.match(notes, /author\.email was dropped/);
+  assert.doesNotMatch(notes, /author was dropped/, "the rest of it survived");
+});
+
+test("an author with nothing left in it says so", () => {
+  assert.match(notesOf({ author: { name: 42 } }), /author was dropped: none of name, email or url survived/);
+  assert.match(notesOf({ author: "Ada" }), /author was dropped: it must be an object/);
+});
+
+test("keywords say how many went, and how many were too many", () => {
+  assert.match(notesOf({ keywords: ["ok", 7, "k".repeat(65)] }), /2 of its keywords were dropped/);
+  assert.match(notesOf({ keywords: ["ok", 7] }), /1 of its keywords was dropped/, "and counts in the singular");
+  assert.match(
+    notesOf({ keywords: Array.from({ length: 25 }, (_, i) => `tag-${i}`) }),
+    /lists 25 keywords; only the first 20 are published/,
+  );
+  assert.match(notesOf({ keywords: "money" }), /keywords was dropped: it must be an array/);
+});
+
+test("a minAppVersion that is not a version is shown what one looks like", () => {
+  assert.match(notesOf({ extensions: { "ai.accountant24": { minAppVersion: "1.2" } } }), /must read like 1\.2\.3/);
+  assert.match(notesOf({ extensions: "nonsense" }), /extensions was ignored: it must be an object/);
+  assert.match(notesOf({ extensions: { "ai.accountant24": "1.2.3" } }), /ai\.accountant24"\] was ignored/);
+});
+
+test("a field the index never publishes is still checked", () => {
+  // `repository` goes nowhere, but an author who wrote it wrong wrote it for
+  // a reason, and will not find out from the entry.
+  assert.match(notesOf({ repository: 42 }), /repository was dropped: it must be a string/);
+});
+
+test("a manifest with nothing wrong with it has nothing to say", () => {
+  // Noise here would bury the notes that matter.
+  assert.deepEqual(parseManifest(manifest({})).notes, [], "an absent field is not a dropped one");
+  assert.deepEqual(
+    parseManifest(manifest({ description: "Does a thing.", version: "1.0.0", keywords: ["money"] })).notes,
+    [],
+  );
+});
+
 test("minAppVersion is read from the accountant24 namespace, and must look like a version", () => {
   const of = (extensions) => parseManifest(manifest({ extensions })).manifest.minAppVersion;
   assert.equal(of({ "ai.accountant24": { minAppVersion: " 1.2.3 " } }), "1.2.3", "trimmed");
@@ -419,6 +484,29 @@ test("a broken skill is dropped without taking the plugin with it", async () => 
   ]);
   const entry = await indexRepo(item, "c0ffee");
   assert.deepEqual(entry.skills, [{ name: "good", description: "A good skill." }]);
+});
+
+test("what a plugin lost on the way in is printed where its author will see it", async () => {
+  // The notes are only worth collecting if they reach someone. This is the
+  // wire between parseManifest and the console `--repo` prints to.
+  const [item] = stubGitHub([
+    plainRepo({
+      files: {
+        "plugin.json": manifest({ version: 42 }),
+        "skills/wordy/SKILL.md": skillFile("wordy", "b".repeat(2000)),
+      },
+    }),
+  ]);
+  const printed = [];
+  console.log = (line) => printed.push(line);
+  try {
+    await indexRepo(item, "c0ffee");
+  } finally {
+    console.log = () => {};
+  }
+  const out = printed.join("\n");
+  assert.match(out, /someone\/plugin is listed, but version was dropped/);
+  assert.match(out, /someone\/plugin is listed, but the description in skills\/wordy\/SKILL\.md was clipped/);
 });
 
 test("a skill description too long to publish is clipped, and the skill still lists", async () => {
@@ -613,4 +701,13 @@ test("a manifest name that breaks a rule is told which rule", () => {
 test("a missing schema is shown the exact line to paste", () => {
   const { error } = parseManifest('{"name":"a-plugin"}');
   assert.match(error, /"\$schema": "https:\/\/agent-plugins\.org\/schemas\/1\.0\.0\/plugin\.schema\.json"/);
+});
+
+test("a schema that is wrong rather than missing is quoted back, not denied", () => {
+  // "your plugin.json does not say which format it is in" reads as untrue to
+  // someone who wrote one, and someone who thinks the message is wrong about
+  // them changes nothing.
+  const { error } = parseManifest('{"$schema":"https://example.com/x.json","name":"a-plugin"}');
+  assert.match(error, /https:\/\/example\.com\/x\.json/, "says what they actually wrote");
+  assert.doesNotMatch(error, /does not say/);
 });

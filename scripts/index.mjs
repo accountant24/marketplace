@@ -177,20 +177,40 @@ function isPlainObject(value) {
 
 const str = (value) => (typeof value === "string" ? value : undefined);
 
+// A field that does not meet the format is dropped rather than taking the
+// plugin down with it -- but silently dropping it leaves the author to notice
+// on their own, from a listing that is missing something they wrote. So every
+// one of these says what it did, and `--repo` prints the lot.
+
 /** Text the index shows a reader. An overlong one is clipped, because half a
  *  description still tells them something. */
-function prose(value, limit) {
+function prose(value, limit, field, notes) {
+  if (value === undefined) return undefined;
   const text = str(value);
-  if (text === undefined || text.length <= limit) return text;
+  if (text === undefined) {
+    notes.push(`${field} was dropped: it must be a string.`);
+    return undefined;
+  }
+  if (text.length <= limit) return text;
+  notes.push(`${field} was clipped to ${limit} characters.`);
   return `${text.slice(0, limit - 1).trimEnd()}…`;
 }
 
 /** A version, a license, a URL, a name. An overlong one is dropped rather than
  *  clipped, because half of any of these is not a shorter one, it is a wrong
  *  one -- a truncated URL still looks like somewhere to go. */
-function ident(value, limit) {
+function ident(value, limit, field, notes) {
+  if (value === undefined) return undefined;
   const text = str(value);
-  return text !== undefined && text.length <= limit ? text : undefined;
+  if (text === undefined) {
+    notes.push(`${field} was dropped: it must be a string.`);
+    return undefined;
+  }
+  if (text.length > limit) {
+    notes.push(`${field} was dropped: it is longer than ${limit} characters.`);
+    return undefined;
+  }
+  return text;
 }
 
 export function pluginNameError(name) {
@@ -202,13 +222,15 @@ export function pluginNameError(name) {
   return undefined;
 }
 
-/** Pull the published fields out of a plugin.json. Only a usable name is
- *  required; every other field is taken when it has the right type and fits
- *  inside LIMITS, and dropped or clipped when it does not. The result is a
- *  projection, not a copy: unknown keys never reach the index, and
- *  minAppVersion comes out flat rather than under `extensions`.
- *  Returns { ok: true, manifest } or { ok: false, error }. */
+/** Pull the published fields out of a plugin.json. A schema, a usable name and
+ *  no undefined keys are required; every other field is taken when it has the
+ *  right type and fits inside LIMITS, and dropped or clipped when it does not.
+ *  The result is a projection, not a copy: unknown keys never reach the index,
+ *  and minAppVersion comes out flat rather than under `extensions`.
+ *  Returns { ok: true, manifest, notes } -- notes being everything the manifest
+ *  lost on the way in, for the author to read -- or { ok: false, error }. */
 export function parseManifest(text) {
+  const notes = [];
   let raw;
   try {
     raw = JSON.parse(text);
@@ -219,11 +241,22 @@ export function parseManifest(text) {
     return { ok: false, error: 'its plugin.json must hold a JSON object, like { "name": "my-plugin" }.' };
   }
 
-  const schema = str(raw.$schema);
-  if (schema === undefined || !SCHEMA_URL_RE.test(schema)) {
+  if (raw.$schema === undefined) {
     return {
       ok: false,
       error: `its plugin.json does not say which manifest format it is written in. Add "$schema": "${SCHEMA_URL}" as the first key. ${DOCS}`,
+    };
+  }
+  const schema = str(raw.$schema);
+  if (schema === undefined || !SCHEMA_URL_RE.test(schema)) {
+    // Telling someone who did write a $schema that they did not is a good way
+    // to have them read the line, agree with themselves and change nothing. So
+    // quote back what they wrote.
+    const shown = JSON.stringify(raw.$schema);
+    const wrote = shown.length > 120 ? `${shown.slice(0, 119)}…` : shown;
+    return {
+      ok: false,
+      error: `its plugin.json gives a "$schema" the index does not know: ${wrote}. It should read "${SCHEMA_URL}". ${DOCS}`,
     };
   }
 
@@ -248,29 +281,61 @@ export function parseManifest(text) {
   // Built in the order the published entry reads, since that is the order the
   // file -- and so every diff of it -- comes out in.
   const manifest = { name };
-  manifest.description = prose(raw.description, LIMITS.description);
-  manifest.version = ident(raw.version, LIMITS.version);
-  if (isPlainObject(raw.author)) {
-    const author = {};
-    const fields = { name: LIMITS.authorName, email: LIMITS.authorEmail, url: LIMITS.url };
-    for (const [key, limit] of Object.entries(fields)) {
-      const value = ident(raw.author[key], limit);
-      if (value !== undefined) author[key] = value;
+  manifest.description = prose(raw.description, LIMITS.description, "description", notes);
+  manifest.version = ident(raw.version, LIMITS.version, "version", notes);
+
+  if (raw.author !== undefined) {
+    if (!isPlainObject(raw.author)) {
+      notes.push("author was dropped: it must be an object holding name, email or url.");
+    } else {
+      const author = {};
+      const fields = { name: LIMITS.authorName, email: LIMITS.authorEmail, url: LIMITS.url };
+      for (const [key, limit] of Object.entries(fields)) {
+        const value = ident(raw.author[key], limit, `author.${key}`, notes);
+        if (value !== undefined) author[key] = value;
+      }
+      if (Object.keys(author).length > 0) manifest.author = author;
+      else notes.push("author was dropped: none of name, email or url survived.");
     }
-    if (Object.keys(author).length > 0) manifest.author = author;
   }
-  manifest.license = ident(raw.license, LIMITS.license);
-  manifest.homepage = ident(raw.homepage, LIMITS.url);
-  if (Array.isArray(raw.keywords)) {
-    const keywords = raw.keywords
-      .map((k) => ident(k, LIMITS.keyword))
-      .filter((k) => k !== undefined)
-      .slice(0, LIMITS.keywords);
-    if (keywords.length > 0) manifest.keywords = keywords;
+
+  manifest.license = ident(raw.license, LIMITS.license, "license", notes);
+  manifest.homepage = ident(raw.homepage, LIMITS.url, "homepage", notes);
+
+  // Never published, so nothing downstream depends on it. Still worth saying,
+  // since an author who wrote it wrong wrote it for a reason.
+  ident(raw.repository, LIMITS.url, "repository", notes);
+
+  if (raw.keywords !== undefined) {
+    if (!Array.isArray(raw.keywords)) {
+      notes.push("keywords was dropped: it must be an array of strings.");
+    } else {
+      const kept = raw.keywords.filter((k) => typeof k === "string" && k.length <= LIMITS.keyword);
+      const bad = raw.keywords.length - kept.length;
+      if (bad > 0) {
+        notes.push(`${bad} of its keywords ${bad === 1 ? "was" : "were"} dropped: a keyword must be a string of at most ${LIMITS.keyword} characters.`);
+      }
+      if (kept.length > LIMITS.keywords) {
+        notes.push(`it lists ${kept.length} keywords; only the first ${LIMITS.keywords} are published.`);
+      }
+      const keywords = kept.slice(0, LIMITS.keywords);
+      if (keywords.length > 0) manifest.keywords = keywords;
+    }
   }
-  const minAppVersion = str(raw.extensions?.[NAMESPACE]?.minAppVersion)?.trim();
-  if (minAppVersion !== undefined && VERSION_RE.test(minAppVersion)) manifest.minAppVersion = minAppVersion;
-  return { ok: true, manifest };
+
+  if (raw.extensions !== undefined && !isPlainObject(raw.extensions)) {
+    notes.push("extensions was ignored: it must be an object keyed by reverse-domain namespace.");
+  }
+  const ours = isPlainObject(raw.extensions) ? raw.extensions[NAMESPACE] : undefined;
+  if (ours !== undefined && !isPlainObject(ours)) {
+    notes.push(`extensions["${NAMESPACE}"] was ignored: it must be an object.`);
+  } else if (isPlainObject(ours) && ours.minAppVersion !== undefined) {
+    const minAppVersion = str(ours.minAppVersion)?.trim();
+    if (minAppVersion !== undefined && VERSION_RE.test(minAppVersion)) manifest.minAppVersion = minAppVersion;
+    else notes.push("minAppVersion was dropped: it must read like 1.2.3.");
+  }
+
+  return { ok: true, manifest, notes };
 }
 
 /** The subset of YAML that skill frontmatter uses: top-level `key: value`,
@@ -332,6 +397,8 @@ export async function indexRepo(item, sha) {
   const parsed = parseManifest(text);
   if (!parsed.ok) return skip(parsed.error);
   const manifest = parsed.manifest;
+  // The plugin lists either way; these are the parts of it that did not.
+  for (const note of parsed.notes) console.log(`${repo} is listed, but ${note}`);
 
   const contents = await api(`/repos/${repo}/contents/skills?ref=${sha}`);
   const folders = Array.isArray(contents)
@@ -345,6 +412,7 @@ export async function indexRepo(item, sha) {
   }
 
   const skills = [];
+  const skillNotes = [];
   for (const folder of folders.slice(0, MAX_SKILLS_PER_PLUGIN)) {
     const path = `skills/${folder}/SKILL.md`;
     const drop = (reason) => console.log(`${repo}: the skill in skills/${folder} is not listed. ${reason}`);
@@ -366,8 +434,10 @@ export async function indexRepo(item, sha) {
       drop("Its frontmatter has no description. Add one: it is what the app shows, and how the agent knows when to use the skill.");
       continue;
     }
-    skills.push({ name: folder, description: prose(fm.description, LIMITS.description) });
+    const description = prose(fm.description, LIMITS.description, `the description in ${path}`, skillNotes);
+    skills.push({ name: folder, description });
   }
+  for (const note of skillNotes) console.log(`${repo} is listed, but ${note}`);
   // A plugin with no skills still lists: it may hold a kind of content this
   // script does not index yet, and the app decides what is worth showing.
   if (skills.length === 0) console.log(`${repo} is listed, but with no skills under skills/.`);
