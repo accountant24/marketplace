@@ -25,19 +25,37 @@ const response = ({ status = 200, json, text, headers = {} }) => ({
 
 /** Serve a set of repositories over a stubbed fetch. Each is
  *  { full_name, sha?, default_branch?, fork?, archived?, private?, license?,
- *    files: { "path": "contents" } }, and skills/ is derived from the files. */
+ *    id?, ownerId?, ownerType?, description?, files: { "path": "contents" } },
+ *  and skills/ is derived from the files. */
 function stubGitHub(repos) {
   const list = repos.map((r) => ({ sha: "c0ffee", default_branch: "main", files: {}, ...r }));
   const byName = new Map(list.map((r) => [r.full_name, r]));
-  const item = (r) => ({
-    full_name: r.full_name,
-    default_branch: r.default_branch,
-    owner: { login: r.full_name.split("/")[0] },
-    fork: Boolean(r.fork),
-    archived: Boolean(r.archived),
-    private: Boolean(r.private),
-    license: r.license,
-  });
+  // Shaped like what the REST API actually returns, because the indexer
+  // publishes fields straight off it: a stub that leaves them out would let a
+  // missing one through as undefined and never fail a test.
+  const item = (r) => {
+    const [login, name] = r.full_name.split("/");
+    const ownerId = r.ownerId ?? 2000;
+    return {
+      id: r.id ?? 1000,
+      name,
+      full_name: r.full_name,
+      html_url: `https://github.com/${r.full_name}`,
+      description: r.description,
+      default_branch: r.default_branch,
+      owner: {
+        login,
+        id: ownerId,
+        type: r.ownerType ?? "Organization",
+        html_url: `https://github.com/${login}`,
+        avatar_url: `https://avatars.githubusercontent.com/u/${ownerId}?v=4`,
+      },
+      fork: Boolean(r.fork),
+      archived: Boolean(r.archived),
+      private: Boolean(r.private),
+      license: r.license,
+    };
+  };
 
   globalThis.fetch = async (url) => {
     const u = String(url);
@@ -176,6 +194,47 @@ test("only the string parts of author and keywords survive", () => {
   assert.deepEqual(parsed.keywords, ["money"]);
 });
 
+// --- how much of the index one repository gets to use ------------------------
+//
+// marketplace.json is public and every client downloads it. Nothing here is
+// about the author doing something wrong; it is about no single repository
+// being able to decide how big the file is for everyone else.
+
+test("a description too long to publish is clipped rather than dropped", () => {
+  const { manifest: parsed } = parseManifest(manifest({ description: "a".repeat(5000) }));
+  assert.equal(parsed.description.length, 1024, "clipped to the limit");
+  assert.ok(parsed.description.endsWith("…"), "and says that it was");
+});
+
+test("a description that fits is left exactly as written", () => {
+  const written = "Tracks things. ".repeat(10).trim();
+  assert.equal(parseManifest(manifest({ description: written })).manifest.description, written);
+});
+
+test("an identifier too long to publish is dropped, because a clipped one would mislead", () => {
+  const { ok, manifest: parsed } = parseManifest(
+    manifest({
+      version: "1".repeat(65),
+      license: "M".repeat(65),
+      homepage: `https://example.com/${"p".repeat(500)}`,
+      author: { name: "A".repeat(129), email: `${"a".repeat(250)}@example.com`, url: `https://example.com/${"u".repeat(500)}` },
+    }),
+  );
+  assert.equal(ok, true, "the plugin still lists");
+  assert.equal(parsed.version, undefined);
+  assert.equal(parsed.license, undefined);
+  assert.equal(parsed.homepage, undefined);
+  assert.equal(parsed.author, undefined, "every part of it went, so the author did too");
+});
+
+test("keywords are capped in number and in length", () => {
+  const { manifest: parsed } = parseManifest(
+    manifest({ keywords: [...Array.from({ length: 25 }, (_, i) => `tag-${i}`), "k".repeat(65)] }),
+  );
+  assert.equal(parsed.keywords.length, 20);
+  assert.ok(!parsed.keywords.some((k) => k.length > 64), "the overlong one never made it in");
+});
+
 test("minAppVersion is read from the accountant24 namespace, and must look like a version", () => {
   const of = (extensions) => parseManifest(manifest({ extensions })).manifest.minAppVersion;
   assert.equal(of({ "ai.accountant24": { minAppVersion: " 1.2.3 " } }), "1.2.3", "trimmed");
@@ -244,12 +303,13 @@ test("a valid repository becomes an entry, with its skills in a stable order", a
   const [item] = stubGitHub([plainRepo()]);
   const entry = await indexRepo(item, "c0ffee");
   assert.equal(entry.id, "someone/plugin");
-  assert.equal(entry.repo, "someone/plugin");
-  assert.equal(entry.name, "a-plugin");
-  assert.equal(entry.description, "Does a thing.");
-  assert.equal(entry.version, "1.0.0");
-  assert.equal(entry.commit, "c0ffee");
-  assert.equal(entry.defaultBranch, "main");
+  assert.equal(entry.manifest.name, "a-plugin");
+  assert.equal(entry.manifest.description, "Does a thing.");
+  assert.equal(entry.manifest.version, "1.0.0");
+  assert.equal(entry.repo.name, "plugin");
+  assert.equal(entry.repo.url, "https://github.com/someone/plugin");
+  assert.equal(entry.repo.commit, "c0ffee");
+  assert.equal(entry.repo.defaultBranch, "main");
   assert.deepEqual(
     entry.skills,
     [
@@ -258,6 +318,39 @@ test("a valid repository becomes an entry, with its skills in a stable order", a
     ],
     "sorted by name, whatever order they came back in",
   );
+});
+
+test("what the author claims and what GitHub says are kept apart", async () => {
+  // Listing is automatic, so everything under `manifest` is the author writing
+  // about themselves. Anyone reading an entry has to be able to tell that from
+  // the repository it actually came from.
+  const [item] = stubGitHub([
+    plainRepo({
+      full_name: "someone/plugin",
+      description: "What GitHub says.",
+      files: { "plugin.json": manifest({ description: "What the author says.", author: { name: "Accountant24" } }) },
+    }),
+  ]);
+  const entry = await indexRepo(item, "c0ffee");
+  assert.equal(entry.manifest.description, "What the author says.");
+  assert.equal(entry.repo.description, "What GitHub says.");
+  assert.equal(entry.manifest.author.name, "Accountant24", "the claim is published as made");
+  assert.equal(entry.repo.owner.login, "someone", "and so is the account that really holds it");
+  assert.equal(entry.manifest.repo, undefined, "nothing observed leaks into the manifest");
+  assert.equal(entry.repo.version, undefined, "and nothing claimed leaks into the repo");
+});
+
+test("an entry carries the owner, down to the ids that survive a rename", async () => {
+  const [item] = stubGitHub([plainRepo({ full_name: "someone/plugin", id: 42, ownerId: 7, ownerType: "User" })]);
+  const { repo } = await indexRepo(item, "c0ffee");
+  assert.deepEqual(repo.owner, {
+    login: "someone",
+    id: 7,
+    type: "User",
+    url: "https://github.com/someone",
+    avatarUrl: "https://avatars.githubusercontent.com/u/7?v=4",
+  });
+  assert.equal(repo.id, 42, "the repository's own id, for a transfer or a rename");
 });
 
 test("a repository with no plugin.json at the root is not a plugin", async () => {
@@ -275,7 +368,7 @@ test("a plugin with no skills is still listed", async () => {
   // pages, say -- must not fall out of the index for lack of them.
   const [item] = stubGitHub([plainRepo({ files: { "plugin.json": manifest({}) } })]);
   const entry = await indexRepo(item, "c0ffee");
-  assert.equal(entry.name, "a-plugin");
+  assert.equal(entry.manifest.name, "a-plugin");
   assert.deepEqual(entry.skills, []);
 });
 
@@ -296,6 +389,17 @@ test("a broken skill is dropped without taking the plugin with it", async () => 
   assert.deepEqual(entry.skills, [{ name: "good", description: "A good skill." }]);
 });
 
+test("a skill description too long to publish is clipped, and the skill still lists", async () => {
+  const [item] = stubGitHub([
+    plainRepo({
+      files: { "plugin.json": manifest({}), "skills/wordy/SKILL.md": skillFile("wordy", "b".repeat(5000)) },
+    }),
+  ]);
+  const [skill] = (await indexRepo(item, "c0ffee")).skills;
+  assert.equal(skill.name, "wordy");
+  assert.equal(skill.description.length, 1024);
+});
+
 test("official is true only for the accountant24 organization", async () => {
   const [ours] = stubGitHub([plainRepo({ full_name: "accountant24/skills" })]);
   assert.equal((await indexRepo(ours, "c0ffee")).official, true);
@@ -304,14 +408,29 @@ test("official is true only for the accountant24 organization", async () => {
   assert.equal((await indexRepo(theirs, "c0ffee")).official, false);
 });
 
-test("a plugin without a license in its manifest inherits the repository's", async () => {
-  const [item] = stubGitHub([plainRepo({ license: { spdx_id: "Apache-2.0" } })]);
-  assert.equal((await indexRepo(item, "c0ffee")).license, "Apache-2.0");
-
-  const [stated] = stubGitHub([
+test("a claimed license and a detected one are both published, neither replacing the other", async () => {
+  // The index does not pick between them. A plugin whose manifest says MIT
+  // while its LICENSE file is Apache-2.0 is telling you something, and folding
+  // the two into one field is what threw it away.
+  const [item] = stubGitHub([
     plainRepo({ license: { spdx_id: "Apache-2.0" }, files: { "plugin.json": manifest({ license: "MIT" }) } }),
   ]);
-  assert.equal((await indexRepo(stated, "c0ffee")).license, "MIT", "the manifest wins");
+  const entry = await indexRepo(item, "c0ffee");
+  assert.equal(entry.manifest.license, "MIT");
+  assert.equal(entry.repo.license, "Apache-2.0");
+
+  const [quiet] = stubGitHub([plainRepo({ license: { spdx_id: "Apache-2.0" }, files: { "plugin.json": manifest({}) } })]);
+  const entryQuiet = await indexRepo(quiet, "c0ffee");
+  assert.equal(entryQuiet.manifest.license, undefined, "an unstated license stays unstated");
+  assert.equal(entryQuiet.repo.license, "Apache-2.0");
+});
+
+test("a license GitHub could not place is not published as one", async () => {
+  // NOASSERTION is what the API says when it found a LICENSE it cannot name.
+  // Passing it through would put a string that is not an SPDX id where every
+  // consumer expects one.
+  const [item] = stubGitHub([plainRepo({ license: { spdx_id: "NOASSERTION" } })]);
+  assert.equal((await indexRepo(item, "c0ffee")).repo.license, undefined);
 });
 
 // --- finding the repositories ------------------------------------------------

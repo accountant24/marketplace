@@ -25,13 +25,36 @@
 // and it ignores manifest fields it does not recognize. Both rules are there so
 // that a plugin built out of something newer than this script -- a kind of
 // content it has never heard of -- does not quietly fall out of the index.
+//
+// Every entry keeps its two sources of truth apart. `manifest` is what the
+// author declared in plugin.json; `repo` is what GitHub says about the
+// repository it came from. Nothing is merged across the two, so a consumer can
+// always tell a claim from an observation -- worth having when listing is
+// automatic and nobody reviews what an author writes about themselves. Where
+// both hold a license, both are published and the app decides.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
+const SCHEMA_VERSION = 1;
 const TOPIC = "accountant24-plugin";
 const OFFICIAL_OWNERS = new Set(["accountant24"]);
 const MAX_SKILLS_PER_PLUGIN = 50;
 const SEARCH_PAGE_LIMIT = 10; // the search API stops at 1000 results anyway
+
+// marketplace.json is public and every client downloads it, so no single
+// repository gets to decide how big it is. The longest description in the index
+// today runs to about 550 characters, so 1024 is room to write in, not a budget
+// to hit.
+const LIMITS = {
+  description: 1024,
+  version: 64,
+  license: 64,
+  url: 512,
+  authorName: 128,
+  authorEmail: 254, // the longest address RFC 5321 allows
+  keywords: 20,
+  keyword: 64,
+};
 
 const DOCS = "See https://accountant24.ai/docs/create-a-plugin for the format.";
 
@@ -118,6 +141,22 @@ function isPlainObject(value) {
 
 const str = (value) => (typeof value === "string" ? value : undefined);
 
+/** Text the index shows a reader. An overlong one is clipped, because half a
+ *  description still tells them something. */
+function prose(value, limit) {
+  const text = str(value);
+  if (text === undefined || text.length <= limit) return text;
+  return `${text.slice(0, limit - 1).trimEnd()}…`;
+}
+
+/** A version, a license, a URL, a name. An overlong one is dropped rather than
+ *  clipped, because half of any of these is not a shorter one, it is a wrong
+ *  one -- a truncated URL still looks like somewhere to go. */
+function ident(value, limit) {
+  const text = str(value);
+  return text !== undefined && text.length <= limit ? text : undefined;
+}
+
 export function pluginNameError(name) {
   if (name.length === 0) return "name is empty.";
   if (name.length > 64) return "name is longer than 64 characters.";
@@ -128,8 +167,11 @@ export function pluginNameError(name) {
 }
 
 /** Pull the published fields out of a plugin.json. Only a usable name is
- *  required; every other field is taken when it has the right type and dropped
- *  when it does not. Returns { ok: true, manifest } or { ok: false, error }. */
+ *  required; every other field is taken when it has the right type and fits
+ *  inside LIMITS, and dropped or clipped when it does not. The result is a
+ *  projection, not a copy: unknown keys never reach the index, and
+ *  minAppVersion comes out flat rather than under `extensions`.
+ *  Returns { ok: true, manifest } or { ok: false, error }. */
 export function parseManifest(text) {
   let raw;
   try {
@@ -146,18 +188,27 @@ export function parseManifest(text) {
   const nameError = pluginNameError(name);
   if (nameError) return { ok: false, error: `its plugin.json ${nameError}` };
 
+  // Built in the order the published entry reads, since that is the order the
+  // file -- and so every diff of it -- comes out in.
   const manifest = { name };
-  for (const key of ["version", "description", "homepage", "license"]) manifest[key] = str(raw[key]);
+  manifest.description = prose(raw.description, LIMITS.description);
+  manifest.version = ident(raw.version, LIMITS.version);
   if (isPlainObject(raw.author)) {
     const author = {};
-    for (const key of ["name", "email", "url"]) {
-      const value = str(raw.author[key]);
+    const fields = { name: LIMITS.authorName, email: LIMITS.authorEmail, url: LIMITS.url };
+    for (const [key, limit] of Object.entries(fields)) {
+      const value = ident(raw.author[key], limit);
       if (value !== undefined) author[key] = value;
     }
     if (Object.keys(author).length > 0) manifest.author = author;
   }
+  manifest.license = ident(raw.license, LIMITS.license);
+  manifest.homepage = ident(raw.homepage, LIMITS.url);
   if (Array.isArray(raw.keywords)) {
-    const keywords = raw.keywords.filter((k) => typeof k === "string");
+    const keywords = raw.keywords
+      .map((k) => ident(k, LIMITS.keyword))
+      .filter((k) => k !== undefined)
+      .slice(0, LIMITS.keywords);
     if (keywords.length > 0) manifest.keywords = keywords;
   }
   const minAppVersion = str(raw.extensions?.[NAMESPACE]?.minAppVersion)?.trim();
@@ -258,29 +309,42 @@ export async function indexRepo(item, sha) {
       drop("Its frontmatter has no description. Add one: it is what the app shows, and how the agent knows when to use the skill.");
       continue;
     }
-    skills.push({ name: folder, description: fm.description });
+    skills.push({ name: folder, description: prose(fm.description, LIMITS.description) });
   }
   // A plugin with no skills still lists: it may hold a kind of content this
   // script does not index yet, and the app decides what is worth showing.
   if (skills.length === 0) console.log(`${repo} is listed, but with no skills under skills/.`);
 
+  const owner = item.owner;
   return {
-    // `id` is the key consumers store. It equals `repo` today, and stays the
-    // key if a repository is ever allowed to hold more than one plugin.
+    // `id` is the key consumers store. It equals owner/name today, and stays
+    // the key if a repository is ever allowed to hold more than one plugin.
     id: repo,
-    name: manifest.name,
-    description: manifest.description ?? "",
-    version: manifest.version,
-    author: manifest.author,
-    license: manifest.license ?? item.license?.spdx_id ?? undefined,
-    homepage: manifest.homepage,
-    keywords: manifest.keywords,
-    repo,
-    defaultBranch: item.default_branch,
-    commit: sha,
-    minAppVersion: manifest.minAppVersion,
+    official: OFFICIAL_OWNERS.has(owner.login.toLowerCase()),
+    manifest,
+    repo: {
+      owner: {
+        login: owner.login,
+        // The numeric ids are the only identifiers that survive a rename. Two
+        // runs where the login matches but the id does not mean the account
+        // behind a listing changed hands -- which, for a login that was freed
+        // up and claimed by someone else, is the whole attack.
+        id: owner.id,
+        type: owner.type,
+        url: owner.html_url ?? `https://github.com/${owner.login}`,
+        avatarUrl: owner.avatar_url,
+      },
+      name: item.name,
+      id: item.id,
+      url: item.html_url ?? `https://github.com/${repo}`,
+      defaultBranch: item.default_branch,
+      commit: sha,
+      // GitHub detects this from the LICENSE file, and says NOASSERTION when it
+      // cannot place what it found. That is not an SPDX id, so it is not one here.
+      license: item.license?.spdx_id === "NOASSERTION" ? undefined : item.license?.spdx_id,
+      description: prose(item.description, LIMITS.description),
+    },
     skills,
-    official: OFFICIAL_OWNERS.has(item.owner.login.toLowerCase()),
   };
 }
 
@@ -344,7 +408,7 @@ export async function main(argv = process.argv.slice(2)) {
   const items = (await searchTopic()).filter((item) => !item.private);
   const plugins = await collect(items, blocklist);
   console.log(`${items.length} repositories with the topic, ${plugins.length} plugins listed`);
-  writeFileSync(INDEX_FILE, stable({ schemaVersion: 1, topic: TOPIC, plugins }));
+  writeFileSync(INDEX_FILE, stable({ schemaVersion: SCHEMA_VERSION, topic: TOPIC, plugins }));
 }
 
 // Run only when this file is the program: as a file, or piped in as `node -`,
