@@ -7,7 +7,7 @@
       "official": true,
       "manifest": {
         "name": "accountant24-skills",
-        "description": "A collection of built-in skills that comes with the Accountant24 app."
+        "description": "A collection of skills preinstalled with the Accountant24 app."
       },
       "repo": {
         "owner": {
@@ -21,7 +21,7 @@
         "id": 1335200323,
         "url": "https://github.com/accountant24/skills",
         "defaultBranch": "main",
-        "commit": "25013fe28b392be578684f83f891c336cb9f5449",
+        "commit": "e034131300f59fd22c9d6ae4241979388351e05b",
         "license": "Apache-2.0",
         "description": "The plugin contains built-in skills for Accountant24"
       },
